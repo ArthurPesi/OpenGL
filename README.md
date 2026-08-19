@@ -20,7 +20,6 @@ build\Release\hexagon.exe
 ```
 ## Windows (MSYS2)
 
-From an MSYS2 MinGW shell:
 
 ```sh
 cmake -S . -B build -G "MinGW Makefiles"
