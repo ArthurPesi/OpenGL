@@ -33,7 +33,7 @@ char *readEntireFile(const char *fileName) {
 }
 
 
-Mesh *read(std::string filename) {
+Mesh *readObj(std::string filename) {
     Mesh *mesh = new Mesh;
     Group *g_atual = new Group;
     bool primeiroGrupo = true;
@@ -193,8 +193,8 @@ int main() {
     glCullFace(GL_BACK);
     glFrontFace(GL_CCW);
 
-    const char *vertexShader = readEntireFile("hexagon.vs");
-    const char *fragmentShader = readEntireFile("hexagon.fs");
+    const char *vertexShader = readEntireFile("vertex.vs");
+    const char *fragmentShader = readEntireFile("fragment.fs");
     if (!vertexShader || !fragmentShader) {
         fprintf(stderr, "ERROR: could not load shaders\n");
         glfwTerminate();
@@ -364,7 +364,7 @@ int main() {
         g0->faces.push_back(&faces[i]);
     }
 
-    m0 = read("sphere.obj");
+    m0 = readObj("sphere.obj");
 
     for (const auto& g : m0->groups) {
         std::vector<float> vs;
