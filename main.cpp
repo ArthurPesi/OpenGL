@@ -35,6 +35,7 @@ char *readEntireFile(const char *fileName) {
 Mesh *read(std::string filename) {
     Mesh *mesh = new Mesh;
     Group *g_atual = new Group;
+    bool primeiroGrupo = true;
     std::ifstream arq(filename);
     while(!arq.eof()) {
         std::string line;
@@ -48,24 +49,69 @@ Mesh *read(std::string filename) {
             float x, y, z;
             sline >> x >> y >> z;
             // ... atribuir vértices da malha
+            mesh->vertex.push_back(new glm::vec3(x, y, z));
         } else if (temp == "f") {
-            // implementar lógica de varições
+            // implementar lógica de variações
             // para face: v, v/t/n, v/t e v//n
             // while enquanto tem tokens em sline:
+            Face *f = new Face;
             std::string token;
-            sline >> token; // v/t/n, por exemplo
-            std::stringstream stoken;
-            stoken << token;
-            std::string aux;
-            getline(stoken, aux, '/');
-            // ... g_atual->addFace(f);
-        } else {// else-if
-            // Verificar outras possibilidades:
-            // g, vn, …
-            //if (!primeiroGrupo){
-            // g_atual = new Group;
-            //}
+            while (sline >> token) { // v/t/n, por exemplo
+                std::stringstream stoken;
+                stoken << token;
+                std::string aux;
+                // v ou v//n (sem t) -> primeiro campo sempre presente
+                getline(stoken, aux, '/');
+                int v = atoi(aux.c_str()) - 1;
+                f->verts.push_back(v);
+                // campo do texto pode estar vazio
+                if (stoken.peek() == '/') {
+                    stoken.get(); // consome o '/'
+                    getline(stoken, aux, '/');
+                    if (!aux.empty()) {
+                        f->texts.push_back(atoi(aux.c_str()) - 1);
+                    } else {
+                        f->texts.push_back(0);
+                    }
+                } else {
+                    getline(stoken, aux, '/');
+                    if (!aux.empty()) {
+                        f->texts.push_back(atoi(aux.c_str()) - 1);
+                    }
+                }
+                // campo da normal (pode não existir)
+                if (stoken >> aux) {
+                    if (!aux.empty()) {
+                        f->norms.push_back(atoi(aux.c_str()) - 1);
+                    } else {
+                        f->norms.push_back(0);
+                    }
+                }
+            }
+            g_atual->faces.push_back(f);
+        } else if (temp == "g") {
+            // Inicia um novo grupo
+            if (!primeiroGrupo) {
+                mesh->groups.push_back(g_atual);
+                g_atual = new Group;
+            }
+            primeiroGrupo = false;
+        } else if (temp == "vn") {
+            // ler normal ...
+            float x, y, z;
+            sline >> x >> y >> z;
+            // ... atribuir normais da malha
+            mesh->normals.push_back(new glm::vec3(x, y, z));
+        } else if (temp == "vt") {
+            // ler texto ...
+            float u, v;
+            sline >> u >> v;
+            // ... atribuir textos da malha
+            mesh->texts.push_back(new glm::vec2(u, v));
         }
+    }
+    if (g_atual != nullptr) {
+        mesh->groups.push_back(g_atual);
     }
     return mesh;
 }
