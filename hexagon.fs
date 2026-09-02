@@ -1,8 +1,10 @@
 #version 410
 
-in vec3 color;
+in vec2 texCoord;
+in vec3 normal;
+
 out vec4 frag_color;
 
 void main () {
-    frag_color = vec4 (color, 1.0);
+    frag_color = vec4 (normal, 1.0);
 }

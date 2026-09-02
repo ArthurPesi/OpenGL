@@ -1,20 +1,21 @@
 cmake_minimum_required(VERSION 3.15)
-project(hexagon LANGUAGES C)
+project(hexagon LANGUAGES CXX)
 
-set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 
 find_package(glfw3 3.3 REQUIRED)
 find_package(GLEW REQUIRED)
+find_package(glm REQUIRED)
 
-add_executable(hexagon main.c)
+add_executable(hexagon main.cpp Main.cpp Mesh.cpp Group.cpp Face.cpp)
 
 target_compile_options(hexagon PRIVATE
-    $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Werror -Wno-unused-parameter>
-    $<$<CXX_COMPILER_ID:Clang>:-Wall -Wextra -Werror -Wno-unused-parameter>
+    $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function>
+    $<$<CXX_COMPILER_ID:Clang>:-Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function>
     $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 
-target_link_libraries(hexagon PRIVATE glfw GLEW::GLEW)
+target_link_libraries(hexagon PRIVATE glfw GLEW::GLEW glm::glm)
 
 if(WIN32)
     target_link_libraries(hexagon PRIVATE opengl32 gdi32)
