@@ -48,7 +48,6 @@ Mesh *read(std::string filename) {
             // ler vértice ...
             float x, y, z;
             sline >> x >> y >> z;
-            // ... atribuir vértices da malha
             mesh->vertex.push_back(new glm::vec3(x, y, z));
         } else if (temp == "f") {
             // implementar lógica de variações
@@ -88,7 +87,53 @@ Mesh *read(std::string filename) {
                     }
                 }
             }
-            g_atual->faces.push_back(f);
+            // triangularizar a face conforme a quantidade de vértices
+            if (f->verts.size() == 3) {
+                // três vértices: mantém a face atual
+                g_atual->faces.push_back(f);
+            } else if (f->verts.size() == 4) {
+                // quatro vértices: dois triângulos 0-1-3 e 1-2-3
+                int v[4], t[4], n[4];
+                for (int i = 0; i < 4; i++) {
+                    v[i] = f->verts[i];
+                    t[i] = f->texts.empty() ? 0 : f->texts[i];
+                    n[i] = f->norms.empty() ? 0 : f->norms[i];
+                }
+                delete f;
+                Face *f1 = new Face;
+                f1->push(v[0], t[0], n[0]);
+                f1->push(v[1], t[1], n[1]);
+                f1->push(v[3], t[3], n[3]);
+                Face *f2 = new Face;
+                f1->push(v[1], t[1], n[1]);
+                f1->push(v[2], t[2], n[2]);
+                f1->push(v[3], t[3], n[3]);
+                g_atual->faces.push_back(f1);
+            } else if (f->verts.size() > 4) {
+                // polígono convexo: vértice central na posição média
+                glm::vec3 center(0.0f, 0.0f, 0.0f);
+                for (int i = 0; i < (int)f->verts.size(); i++) {
+                    center += *mesh->vertex[f->verts[i]];
+                }
+                center /= (float)f->verts.size();
+                int centerIdx = (int)mesh->vertex.size();
+                mesh->vertex.push_back(new glm::vec3(center));
+
+                int count = (int)f->verts.size();
+                int *v = new int[count];
+                for (int i = 0; i < count; i++) v[i] = f->verts[i];
+                delete f;
+
+                for (int i = 0; i < count; i++) {
+                    int next = (i + 1) % count;
+                    Face *tris = new Face;
+                    tris->push(v[i], 0, 0);
+                    tris->push(v[next], 0, 0);
+                    tris->push(centerIdx, 0, 0);
+                    g_atual->faces.push_back(tris);
+                }
+                delete[] v;
+            }
         } else if (temp == "g") {
             // Inicia um novo grupo
             if (!primeiroGrupo) {
@@ -272,6 +317,8 @@ int main() {
     for(int i = 0; i < 6; i++) {
         g0->faces.push_back(&faces[i]);
     }
+
+    m0 = read("sphere.obj");
 
     for (const auto& g : m0->groups) {
         std::vector<float> vs;
