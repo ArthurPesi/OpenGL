@@ -9,9 +9,6 @@
 #include <sstream>
 #include "Main.hpp"
 
-#define HALF_COS60 0.25f
-#define HALF_SIN60 0.433f
-
 void resize(GLFWwindow *window, int width, int height) {
     glViewport(0,0, width, height);
 }
@@ -22,6 +19,10 @@ void logError(int code, const char *description) {
 
 char *readEntireFile(const char *fileName) {
     FILE *f = fopen(fileName, "r");
+    if (!f) {
+        fprintf(stderr, "ERROR: could not open shader file %s\n", fileName);
+        return nullptr;
+    }
     fseek(f, 0, SEEK_END);
     size_t fileSize = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -37,9 +38,8 @@ Mesh *read(std::string filename) {
     Group *g_atual = new Group;
     bool primeiroGrupo = true;
     std::ifstream arq(filename);
-    while(!arq.eof()) {
-        std::string line;
-        getline(arq, line);
+    std::string line;
+    while(getline(arq, line)) {
         std::stringstream sline;
         sline << line;
         std::string temp;
@@ -96,8 +96,8 @@ Mesh *read(std::string filename) {
                 int v[4], t[4], n[4];
                 for (int i = 0; i < 4; i++) {
                     v[i] = f->verts[i];
-                    t[i] = f->texts.empty() ? 0 : f->texts[i];
-                    n[i] = f->norms.empty() ? 0 : f->norms[i];
+                    t[i] = (i < (int)f->texts.size()) ? f->texts[i] : 0;
+                    n[i] = (i < (int)f->norms.size()) ? f->norms[i] : 0;
                 }
                 delete f;
                 Face *f1 = new Face;
@@ -121,18 +121,26 @@ Mesh *read(std::string filename) {
 
                 int count = (int)f->verts.size();
                 int *v = new int[count];
-                for (int i = 0; i < count; i++) v[i] = f->verts[i];
+                int *t = new int[count];
+                int *n = new int[count];
+                for (int i = 0; i < count; i++) {
+                    v[i] = f->verts[i];
+                    t[i] = (i < (int)f->texts.size()) ? f->texts[i] : 0;
+                    n[i] = (i < (int)f->norms.size()) ? f->norms[i] : 0;
+                }
                 delete f;
 
                 for (int i = 0; i < count; i++) {
                     int next = (i + 1) % count;
                     Face *tris = new Face;
-                    tris->push(v[i], 0, 0);
-                    tris->push(v[next], 0, 0);
+                    tris->push(v[i], t[i], n[i]);
+                    tris->push(v[next], t[next], n[next]);
                     tris->push(centerIdx, 0, 0);
                     g_atual->faces.push_back(tris);
                 }
                 delete[] v;
+                delete[] t;
+                delete[] n;
             }
         } else if (temp == "g") {
             // Inicia um novo grupo
@@ -180,26 +188,64 @@ int main() {
     glewExperimental = GL_TRUE;
     glewInit();
 
+    glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
-    glFrontFace(GL_CW);
+    glFrontFace(GL_CCW);
 
     const char *vertexShader = readEntireFile("hexagon.vs");
     const char *fragmentShader = readEntireFile("hexagon.fs");
+    if (!vertexShader || !fragmentShader) {
+        fprintf(stderr, "ERROR: could not load shaders\n");
+        glfwTerminate();
+        return 1;
+    }
 
     // identifica vs e o associa com vertex_shader
     GLuint vs = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vs, 1, &vertexShader, NULL);
     glCompileShader(vs);
+    // verifica sucesso da compilação do vertex shader
+    GLint compiled = GL_FALSE;
+    glGetShaderiv(vs, GL_COMPILE_STATUS, &compiled);
+    if (compiled == GL_FALSE) {
+        GLint length = 0;
+        glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &length);
+        std::vector<char> log(length > 0 ? length : 1);
+        glGetShaderInfoLog(vs, (GLsizei)log.size(), NULL, log.data());
+        fprintf(stderr, "ERROR: vertex shader compilation failed:\n%s\n", log.data());
+        return 1;
+    }
     // identifica fs e o associa com fragment_shader
     GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
     glShaderSource(fs, 1, &fragmentShader, NULL);
     glCompileShader(fs);
+    // verifica sucesso da compilação do fragment shader
+    glGetShaderiv(fs, GL_COMPILE_STATUS, &compiled);
+    if (compiled == GL_FALSE) {
+        GLint length = 0;
+        glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &length);
+        std::vector<char> log(length > 0 ? length : 1);
+        glGetShaderInfoLog(fs, (GLsizei)log.size(), NULL, log.data());
+        fprintf(stderr, "ERROR: fragment shader compilation failed:\n%s\n", log.data());
+        return 1;
+    }
     // identifica do programa, adiciona partes e faz "linkagem"
     GLuint shaderProgram = glCreateProgram();
     glAttachShader(shaderProgram, fs);
     glAttachShader(shaderProgram, vs);
     glLinkProgram(shaderProgram);
+    // verifica sucesso da linkagem do programa
+    GLint linked = GL_FALSE;
+    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &linked);
+    if (linked == GL_FALSE) {
+        GLint length = 0;
+        glGetProgramiv(shaderProgram, GL_INFO_LOG_LENGTH, &length);
+        std::vector<char> log(length > 0 ? length : 1);
+        glGetProgramInfoLog(shaderProgram, (GLsizei)log.size(), NULL, log.data());
+        fprintf(stderr, "ERROR: program link failed:\n%s\n", log.data());
+        return 1;
+    }
 
     // obtenção de versão suportada da OpenGL e renderizador
     glUseProgram (shaderProgram);
@@ -330,13 +376,26 @@ int main() {
                 vs.push_back(v.x);
                 vs.push_back(v.y);
                 vs.push_back(v.z);
-                glm::vec2 vt = *m0->texts[f->texts[i]];
-                vts.push_back(vt.x);
-                vts.push_back(vt.y);
-                glm::vec3 vn = *m0->normals[f->norms[i]];
-                vns.push_back(vn.x);
-                vns.push_back(vn.y);
-                vns.push_back(vn.z);
+
+                if (i < f->texts.size() && f->texts[i] >= 0 && f->texts[i] < (int)m0->texts.size()) {
+                    glm::vec2 vt = *m0->texts[f->texts[i]];
+                    vts.push_back(vt.x);
+                    vts.push_back(vt.y);
+                } else {
+                    vts.push_back(0.0f);
+                    vts.push_back(0.0f);
+                }
+
+                if (i < f->norms.size() && f->norms[i] >= 0 && f->norms[i] < (int)m0->normals.size()) {
+                    glm::vec3 vn = *m0->normals[f->norms[i]];
+                    vns.push_back(vn.x);
+                    vns.push_back(vn.y);
+                    vns.push_back(vn.z);
+                } else {
+                    vns.push_back(0.0f);
+                    vns.push_back(0.0f);
+                    vns.push_back(0.0f);
+                }
             }
         }
         g->numberOfVertices = vs.size() / 3;
