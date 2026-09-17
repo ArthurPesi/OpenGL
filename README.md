@@ -3,6 +3,15 @@ CMake, OpenGL, GLFW3, GLEW
 
 # Build and Run
 
+## macOS
+
+```sh
+brew install glfw glew glm
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/opt/homebrew
+cmake --build build
+./build/hexagon
+```
+
 ## Linux
 
 ```sh

@@ -174,6 +174,10 @@ int main() {
         fprintf(stderr, "ERROR: could not start GLFW3\n");
         return 1;
     }
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     GLFWwindow *window = glfwCreateWindow(640, 480, "Teste de versão OpenGL", NULL, NULL);
     if (!window) {
         fprintf (stderr, "ERROR: could not open window with GLFW3\n");
@@ -325,22 +329,22 @@ int main() {
     faces[1].push(2,3,1);
 
     //back
-    faces[2].push(1,0,2);
-    faces[2].push(4,1,2);
-    faces[2].push(0,3,2);
+    faces[2].push(7,0,2);
+    faces[2].push(6,1,2);
+    faces[2].push(4,3,2);
 
-    faces[2].push(5,1,2);
-    faces[2].push(4,2,2);
-    faces[2].push(1,3,2);
+    faces[2].push(6,1,2);
+    faces[2].push(5,2,2);
+    faces[2].push(4,3,2);
 
     //West
-    faces[3].push(1,0,3);
-    faces[3].push(4,1,3);
+    faces[3].push(4,0,3);
+    faces[3].push(5,1,3);
     faces[3].push(0,3,3);
 
     faces[3].push(5,1,3);
-    faces[3].push(4,2,3);
-    faces[3].push(1,3,3);
+    faces[3].push(1,2,3);
+    faces[3].push(0,3,3);
 
     //Top
     faces[4].push(1,0,4);
@@ -364,7 +368,7 @@ int main() {
         g0->faces.push_back(&faces[i]);
     }
 
-    m0 = readObj("sphere.obj");
+    //m0 = readObj("sphere.obj");
 
     for (const auto& g : m0->groups) {
         std::vector<float> vs;

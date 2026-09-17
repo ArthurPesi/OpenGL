@@ -19,13 +19,15 @@ target_link_libraries(hexagon PRIVATE glfw GLEW::GLEW glm::glm)
 
 if(WIN32)
     target_link_libraries(hexagon PRIVATE opengl32 gdi32)
+elseif(APPLE)
+    target_link_libraries(hexagon PRIVATE "-framework OpenGL" "-framework Cocoa" "-framework IOKit")
 else()
     target_link_libraries(hexagon PRIVATE GL X11 GLU)
 endif()
 
 add_custom_command(TARGET hexagon POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_SOURCE_DIR}/hexagon.vs
-        ${CMAKE_SOURCE_DIR}/hexagon.fs
+        ${CMAKE_SOURCE_DIR}/vertex.vs
+        ${CMAKE_SOURCE_DIR}/fragment.fs
         $<TARGET_FILE_DIR:hexagon>
 )
