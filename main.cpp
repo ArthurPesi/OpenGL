@@ -5,9 +5,13 @@
 #include <glm/vec3.hpp>
 #include <glm/vec2.hpp>
 #include <glm/mat4x4.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <fstream>
 #include <sstream>
+#include <limits>
 #include "Main.hpp"
+#include "Obj3D.hpp"
+#include "Projectile.hpp"
 
 void resize(GLFWwindow *window, int width, int height) {
     glViewport(0,0, width, height);
@@ -15,6 +19,38 @@ void resize(GLFWwindow *window, int width, int height) {
 
 void logError(int code, const char *description) {
     fprintf(stderr, "Glfw error code %d: %s\n", code, description);
+}
+
+glm::vec3 cameraPos = glm::vec3(0.0f, 0.0f, 3.0f);
+glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
+glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
+
+float yaw = -90.0f;
+float pitch = 0.0f;
+float lastX = 320.0f;
+float lastY = 240.0f;
+bool firstMouse = true;
+
+void mouseCallback(GLFWwindow *window, double xpos, double ypos) {
+    if (firstMouse) {
+        lastX = xpos;
+        lastY = ypos;
+        firstMouse = false;
+    }
+    float xoffset = (float)(xpos - lastX);
+    float yoffset = (float)(lastY - ypos);
+    lastX = xpos;
+    lastY = ypos;
+
+    float sensitivity = 0.05f;
+    yaw += xoffset * sensitivity;
+    pitch += yoffset * sensitivity;
+
+    if (pitch > 89.0f) {
+        pitch = 89.0f;
+    } else if (pitch < -89.0f) {
+        pitch = -89.0f;
+    }
 }
 
 char *readEntireFile(const char *fileName) {
@@ -35,6 +71,8 @@ char *readEntireFile(const char *fileName) {
 
 Mesh *readObj(std::string filename) {
     Mesh *mesh = new Mesh;
+    mesh->min = glm::vec3(std::numeric_limits<float>::infinity());
+    mesh->max = glm::vec3(-std::numeric_limits<float>::infinity());
     Group *g_atual = new Group;
     bool primeiroGrupo = true;
     std::ifstream arq(filename);
@@ -49,6 +87,12 @@ Mesh *readObj(std::string filename) {
             float x, y, z;
             sline >> x >> y >> z;
             mesh->vertex.push_back(new glm::vec3(x, y, z));
+            if (x < mesh->min.x) mesh->min.x = x;
+            if (y < mesh->min.y) mesh->min.y = y;
+            if (z < mesh->min.z) mesh->min.z = z;
+            if (x > mesh->max.x) mesh->max.x = x;
+            if (y > mesh->max.y) mesh->max.y = y;
+            if (z > mesh->max.z) mesh->max.z = z;
         } else if (temp == "f") {
             // implementar lógica de variações
             // para face: v, v/t/n, v/t e v//n
@@ -169,6 +213,57 @@ Mesh *readObj(std::string filename) {
     return mesh;
 }
 
+void loadConfig(const char *fileName, std::vector<Mesh*> &meshes, std::vector<Obj3D> &objects) {
+    std::ifstream in(fileName);
+    if (!in) {
+        fprintf(stderr, "ERROR: could not open config file %s\n", fileName);
+        return;
+    }
+    std::string line;
+    bool meshSection = true;
+    while (getline(in, line)) {
+        size_t start = line.find_first_not_of(" \t\r");
+        if (start == std::string::npos) {
+            if (meshSection) {
+                meshSection = false;
+            }
+            continue;
+        }
+        if (line[start] == '#') {
+            continue;
+        }
+        std::stringstream sline(line.substr(start));
+        if (meshSection) {
+            int index;
+            std::string path;
+            sline >> index >> path;
+            (void)index;
+            meshes.push_back(readObj(path));
+        } else {
+            int meshIndex;
+            int collisionFlag;
+            float tx, ty, tz, sx, sy, sz, rx, ry, rz;
+            sline >> meshIndex >> tx >> ty >> tz >> sx >> sy >> sz >> rx >> ry >> rz >> collisionFlag;
+
+            Obj3D obj;
+            if (meshIndex >= 0 && meshIndex < (int)meshes.size()) {
+                obj.mesh = meshes[meshIndex];
+            } else {
+                fprintf(stderr, "ERROR: config references invalid mesh index %d\n", meshIndex);
+                continue;
+            }
+            glm::mat4 rotation = glm::mat4(1.0f);
+            rotation = glm::rotate(rotation, glm::radians(rx), glm::vec3(1.0f, 0.0f, 0.0f));
+            rotation = glm::rotate(rotation, glm::radians(ry), glm::vec3(0.0f, 1.0f, 0.0f));
+            rotation = glm::rotate(rotation, glm::radians(rz), glm::vec3(0.0f, 0.0f, 1.0f));
+            obj.transform = glm::translate(glm::mat4(1.0f), glm::vec3(tx, ty, tz)) * rotation *
+                            glm::scale(glm::mat4(1.0f), glm::vec3(sx, sy, sz));
+            obj.collision = collisionFlag != 0;
+            objects.push_back(obj);
+        }
+    }
+}
+
 int main() {
     if (!glfwInit()) {
         fprintf(stderr, "ERROR: could not start GLFW3\n");
@@ -188,6 +283,8 @@ int main() {
 
     glfwSetWindowSizeCallback(window, resize);
     glfwSetErrorCallback(logError);
+    glfwSetCursorPosCallback(window, mouseCallback);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
     glewExperimental = GL_TRUE;
     glewInit();
@@ -254,190 +351,155 @@ int main() {
     // obtenção de versão suportada da OpenGL e renderizador
     glUseProgram (shaderProgram);
 
-    GLuint VBO, VAO;
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
+    GLint uniView = glGetUniformLocation(shaderProgram, "view");
+    GLint uniProjection = glGetUniformLocation(shaderProgram, "projection");
+    GLint uniTransform = glGetUniformLocation(shaderProgram, "transform");
 
-    glBindVertexArray(VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    // Matriz de projeção padrão (perspective)
+    float aspect = 640.0f / 480.0f;
+    glm::mat4 projection = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
 
-    Mesh *m0 = new Mesh;
-    glm::vec3 v0(-0.5f, -0.5f, 0.5f);
-    glm::vec3 v1(-0.5f, 0.5f, 0.5f);
-    glm::vec3 v2(0.5f, 0.5f, 0.5f);
-    glm::vec3 v3(0.5f, -0.5f, 0.5f);
+    glUniformMatrix4fv(uniProjection, 1, GL_FALSE, &projection[0][0]);
 
-    glm::vec3 v4(-0.5f, -0.5f, -0.5f);
-    glm::vec3 v5(-0.5f, 0.5f, -0.5f);
-    glm::vec3 v6(0.5f, 0.5f, -0.5f);
-    glm::vec3 v7(0.5f, -0.5f, -0.5f);
+    std::vector<Mesh*> meshes;
+    std::vector<Obj3D> objects;
+    std::vector<Projectile*> projectiles;
+    loadConfig("config.cfg", meshes, objects);
+    Mesh *sphereMesh = meshes.size() > 1 ? meshes[1] : nullptr;
 
-    m0->vertex.push_back(&v0);
-    m0->vertex.push_back(&v1);
-    m0->vertex.push_back(&v2);
-    m0->vertex.push_back(&v3);
+    // Carrega os dados de cada malha para a GPU
+    for (auto* mesh : meshes) {
+        for (const auto& g : mesh->groups) {
+            std::vector<float> vs;
+            std::vector<float> vts;
+            std::vector<float> vns;
+            for (const auto& f: g->faces) {
+                for (unsigned int i = 0; i < f->verts.size(); i++) {
+                    glm::vec3 v = *mesh->vertex[f->verts[i]];
+                    vs.push_back(v.x);
+                    vs.push_back(v.y);
+                    vs.push_back(v.z);
 
-    m0->vertex.push_back(&v4);
-    m0->vertex.push_back(&v5);
-    m0->vertex.push_back(&v6);
-    m0->vertex.push_back(&v7);
+                    if (i < f->texts.size() && f->texts[i] >= 0 && f->texts[i] < (int)mesh->texts.size()) {
+                        glm::vec2 vt = *mesh->texts[f->texts[i]];
+                        vts.push_back(vt.x);
+                        vts.push_back(vt.y);
+                    } else {
+                        vts.push_back(0.0f);
+                        vts.push_back(0.0f);
+                    }
 
-    glm::vec2 uv0(0.0f, 0.0f);
-    glm::vec2 uv1(0.0f, 1.0f);
-    glm::vec2 uv2(1.0f, 1.0f);
-    glm::vec2 uv3(1.0f, 0.0f);
-
-    m0->texts.push_back(&uv0);
-    m0->texts.push_back(&uv1);
-    m0->texts.push_back(&uv2);
-    m0->texts.push_back(&uv3);
-
-    glm::vec3 n0(0.0f, 0.0f, 1.0f);//front
-    glm::vec3 n1(1.0f, 0.0f, 0.0f);//east
-    glm::vec3 n2(0.0f, 0.0f, -1.0f);//back
-    glm::vec3 n3(-1.0f, 0.0f, 0.0f);//west
-    glm::vec3 n4(0.0f, 1.0f, 0.0f);//top
-    glm::vec3 n5(0.0f, -1.0f, 0.0f);//down
-
-    m0->normals.push_back(&n0);
-    m0->normals.push_back(&n1);
-    m0->normals.push_back(&n2);
-    m0->normals.push_back(&n3);
-    m0->normals.push_back(&n4);
-    m0->normals.push_back(&n5);
-
-    Group *g0 = new Group;
-    m0->groups.push_back(g0);
-
-    Face *faces = new Face[6];
-    //front
-    faces[0].push(0,0,0);
-    faces[0].push(1,1,0);
-    faces[0].push(3,3,0);
-
-    faces[0].push(1,1,0);
-    faces[0].push(2,2,0);
-    faces[0].push(3,3,0);
-
-    //east
-    faces[1].push(2,0,1);
-    faces[1].push(3,1,1);
-    faces[1].push(7,3,1);
-
-    faces[1].push(7,1,1);
-    faces[1].push(6,2,1);
-    faces[1].push(2,3,1);
-
-    //back
-    faces[2].push(7,0,2);
-    faces[2].push(6,1,2);
-    faces[2].push(4,3,2);
-
-    faces[2].push(6,1,2);
-    faces[2].push(5,2,2);
-    faces[2].push(4,3,2);
-
-    //West
-    faces[3].push(4,0,3);
-    faces[3].push(5,1,3);
-    faces[3].push(0,3,3);
-
-    faces[3].push(5,1,3);
-    faces[3].push(1,2,3);
-    faces[3].push(0,3,3);
-
-    //Top
-    faces[4].push(1,0,4);
-    faces[4].push(2,1,4);
-    faces[4].push(5,3,4);
-
-    faces[4].push(5,1,4);
-    faces[4].push(2,2,4);
-    faces[4].push(6,3,4);
-
-    //Bottom
-    faces[5].push(4,0,5);
-    faces[5].push(3,1,5);
-    faces[5].push(0,3,5);
-
-    faces[5].push(7,1,5);
-    faces[5].push(3,2,5);
-    faces[5].push(4,3,5);
-
-    for(int i = 0; i < 6; i++) {
-        g0->faces.push_back(&faces[i]);
-    }
-
-    //m0 = readObj("sphere.obj");
-
-    for (const auto& g : m0->groups) {
-        std::vector<float> vs;
-        std::vector<float> vts;
-        std::vector<float> vns;
-        for (const auto& f: g->faces) {
-            for (unsigned int i = 0; i < f->verts.size(); i++) {
-                glm::vec3 v = *m0->vertex[f->verts[i]];
-                vs.push_back(v.x);
-                vs.push_back(v.y);
-                vs.push_back(v.z);
-
-                if (i < f->texts.size() && f->texts[i] >= 0 && f->texts[i] < (int)m0->texts.size()) {
-                    glm::vec2 vt = *m0->texts[f->texts[i]];
-                    vts.push_back(vt.x);
-                    vts.push_back(vt.y);
-                } else {
-                    vts.push_back(0.0f);
-                    vts.push_back(0.0f);
-                }
-
-                if (i < f->norms.size() && f->norms[i] >= 0 && f->norms[i] < (int)m0->normals.size()) {
-                    glm::vec3 vn = *m0->normals[f->norms[i]];
-                    vns.push_back(vn.x);
-                    vns.push_back(vn.y);
-                    vns.push_back(vn.z);
-                } else {
-                    vns.push_back(0.0f);
-                    vns.push_back(0.0f);
-                    vns.push_back(0.0f);
+                    if (i < f->norms.size() && f->norms[i] >= 0 && f->norms[i] < (int)mesh->normals.size()) {
+                        glm::vec3 vn = *mesh->normals[f->norms[i]];
+                        vns.push_back(vn.x);
+                        vns.push_back(vn.y);
+                        vns.push_back(vn.z);
+                    } else {
+                        vns.push_back(0.0f);
+                        vns.push_back(0.0f);
+                        vns.push_back(0.0f);
+                    }
                 }
             }
+            g->numberOfVertices = vs.size() / 3;
+
+            glGenVertexArrays(1, &g->VAO);
+            glBindVertexArray(g->VAO);
+
+            GLuint vbos[3];
+            glGenBuffers(3, vbos);
+
+            glBindBuffer(GL_ARRAY_BUFFER, vbos[0]);
+            glBufferData(GL_ARRAY_BUFFER, vs.size() * sizeof(float), vs.data(), GL_STATIC_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+
+            glBindBuffer(GL_ARRAY_BUFFER, vbos[1]);
+            glBufferData(GL_ARRAY_BUFFER, vts.size() * sizeof(float), vts.data(), GL_STATIC_DRAW);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(1);
+
+            glBindBuffer(GL_ARRAY_BUFFER, vbos[2]);
+            glBufferData(GL_ARRAY_BUFFER, vns.size() * sizeof(float), vns.data(), GL_STATIC_DRAW);
+            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(2);
+
+            glBindVertexArray(0);
         }
-        g->numberOfVertices = vs.size() / 3;
-
-        glGenVertexArrays(1, &g->VAO);
-        glBindVertexArray(g->VAO);
-
-        GLuint vbos[3];
-        glGenBuffers(3, vbos);
-
-        glBindBuffer(GL_ARRAY_BUFFER, vbos[0]);
-        glBufferData(GL_ARRAY_BUFFER, vs.size() * sizeof(float), vs.data(), GL_STATIC_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
-
-        glBindBuffer(GL_ARRAY_BUFFER, vbos[1]);
-        glBufferData(GL_ARRAY_BUFFER, vts.size() * sizeof(float), vts.data(), GL_STATIC_DRAW);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(1);
-
-        glBindBuffer(GL_ARRAY_BUFFER, vbos[2]);
-        glBufferData(GL_ARRAY_BUFFER, vns.size() * sizeof(float), vns.data(), GL_STATIC_DRAW);
-        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(2);
-
-        glBindVertexArray(0);
     }
 
     glClearColor(0.3f, 0.3f, 0.3f, 1.0f);
+    const float cameraSpeed = 0.05f;
+    double lastTime = glfwGetTime();
+    bool spacePressed = false;
     while (!glfwWindowShouldClose(window)) {
+        double currentTime = glfwGetTime();
+        float deltaTime = (float)(currentTime - lastTime);
+        lastTime = currentTime;
+
+        // Processa entrada do teclado (WASD) para translação da câmera
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+            cameraPos += cameraSpeed * cameraFront;
+        }
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
+            cameraPos -= cameraSpeed * cameraFront;
+        }
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
+            cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
+        }
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
+            cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
+        }
+
+        // Dispara uma esfera na posição da câmera na direção que ela aponta
+        bool spaceIsPressed = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+        if (spaceIsPressed && !spacePressed && sphereMesh != nullptr) {
+            projectiles.push_back(new Projectile(sphereMesh, cameraPos, cameraFront));
+        }
+        spacePressed = spaceIsPressed;
+
+        // Avalia a direção da câmera a partir dos ângulos de Euler (mouse)
+        cameraFront = glm::normalize(glm::vec3(
+            cos(glm::radians(yaw)) * cos(glm::radians(pitch)),
+            sin(glm::radians(pitch)),
+            sin(glm::radians(yaw)) * cos(glm::radians(pitch))));
+
+        // Avalia a matriz de visão (lookAt) a cada frame
+        glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+        glUniformMatrix4fv(uniView, 1, GL_FALSE, &view[0][0]);
+
+        // Atualiza posição e verifica expiração de cada projétil
+        for (auto it = projectiles.begin(); it != projectiles.end(); ) {
+            if ((*it)->step(deltaTime, objects)) {
+                delete *it;
+                it = projectiles.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        // Define vao como vertex array atual e desenha os vértices de cada grupo
-        for (const auto& g : m0->groups) {
-            glBindVertexArray(g->VAO);
-            glDrawArrays(GL_TRIANGLES, 0, g->numberOfVertices);
+        // Para cada Obj3D, define a matriz transform e desenha todas as malhas
+        for (const auto& obj : objects) {
+            glUniformMatrix4fv(uniTransform, 1, GL_FALSE, &obj.transform[0][0]);
+            for (const auto& g : obj.mesh->groups) {
+                glBindVertexArray(g->VAO);
+                glDrawArrays(GL_TRIANGLES, 0, g->numberOfVertices);
+            }
+        }
+        // Desenha todas as esferas lançadas
+        for (const auto& p : projectiles) {
+            glUniformMatrix4fv(uniTransform, 1, GL_FALSE, &p->transform[0][0]);
+            for (const auto& g : p->mesh->groups) {
+                glBindVertexArray(g->VAO);
+                glDrawArrays(GL_TRIANGLES, 0, g->numberOfVertices);
+            }
         }
         glfwSwapBuffers(window);
         glfwPollEvents();
+    }
+    for (auto* p : projectiles) {
+        delete p;
     }
     // encerra contexto GL e outros recursos da GLFW
     glfwTerminate();

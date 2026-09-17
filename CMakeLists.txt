@@ -7,7 +7,7 @@ find_package(glfw3 3.3 REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(glm REQUIRED)
 
-add_executable(hexagon main.cpp Main.cpp Mesh.cpp Group.cpp Face.cpp)
+add_executable(hexagon main.cpp Main.cpp Mesh.cpp Group.cpp Face.cpp Obj3D.cpp Projectile.cpp)
 
 target_compile_options(hexagon PRIVATE
     $<$<CXX_COMPILER_ID:GNU>:-Wall -Wextra -Werror -Wno-unused-parameter -Wno-unused-variable -Wno-unused-function>
