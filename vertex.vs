@@ -14,7 +14,8 @@ out vec3 fragPos;
 
 void main () {
     texCoord = vt;
-    normal = vn;
-    fragPos = vec3 (view * vec4 (vp, 1.0));
-    gl_Position = projection * view * transform * vec4 (vp, 1.0);
+    // World-space position and normal for lighting.
+    fragPos = vec3(transform * vec4(vp, 1.0));
+    normal = mat3(transpose(inverse(transform))) * vn;
+    gl_Position = projection * view * transform * vec4(vp, 1.0);
 }

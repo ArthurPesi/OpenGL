@@ -9,12 +9,27 @@
 #include <fstream>
 #include <sstream>
 #include <limits>
+#include <string>
 #include "Main.hpp"
 #include "Obj3D.hpp"
 #include "Projectile.hpp"
+#include "Material.hpp"
+#include "stb_image.h"
 
-void resize(GLFWwindow *window, int width, int height) {
-    glViewport(0,0, width, height);
+GLint g_uniProjection = -1;
+
+void updateProjection(int width, int height) {
+    if (width == 0 || height == 0) return;
+    float aspect = (float)width / (float)height;
+    glm::mat4 projection = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+    glUniformMatrix4fv(g_uniProjection, 1, GL_FALSE, &projection[0][0]);
+}
+
+void resize(GLFWwindow *window, int /*width*/, int /*height*/) {
+    int fbWidth, fbHeight;
+    glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+    glViewport(0, 0, fbWidth, fbHeight);
+    updateProjection(fbWidth, fbHeight);
 }
 
 void logError(int code, const char *description) {
@@ -66,6 +81,89 @@ char *readEntireFile(const char *fileName) {
     fread(fileContents, sizeof(char), fileSize, f);
     fclose(f);
     return fileContents;
+}
+
+// Returns the directory portion of a path (with trailing slash), or "" if none.
+std::string dirOf(const std::string &path) {
+    size_t slash = path.find_last_of("/\\");
+    if (slash == std::string::npos) return "";
+    return path.substr(0, slash + 1);
+}
+
+// Loads an image into an OpenGL texture and returns its id. Returns 0 on failure
+// (callers fall back to the default white texture). stb_image decodes BMP, JPG,
+// PNG, TGA, GIF, PSD, HDR, PIC and PNM, auto-detecting the format from content.
+GLuint loadTexture(const std::string &filename) {
+    // stb loads top-left origin; OpenGL expects bottom-left, so flip on load.
+    stbi_set_flip_vertically_on_load(true);
+
+    int width, height, channels;
+    unsigned char *data = stbi_load(filename.c_str(), &width, &height, &channels, 0);
+    if (!data) {
+        fprintf(stderr, "ERROR: could not load texture %s: %s\n",
+                filename.c_str(), stbi_failure_reason());
+        return 0;
+    }
+
+    // Map channel count to GL formats (grayscale, RGB, RGBA).
+    GLenum format;
+    if (channels == 1) {
+        format = GL_RED;
+    } else if (channels == 4) {
+        format = GL_RGBA;
+    } else {
+        format = GL_RGB; // 3 channels, and a safe default
+    }
+
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1); // rows may not be 4-byte aligned
+    glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    stbi_image_free(data);
+    return tex;
+}
+
+// Parses a Wavefront .mtl file into Material objects appended to `materials`.
+void readMtl(const std::string &filename, std::vector<Material*> &materials) {
+    std::ifstream in(filename);
+    if (!in) {
+        fprintf(stderr, "ERROR: could not open material file %s\n", filename.c_str());
+        return;
+    }
+    Material *cur = nullptr;
+    std::string line;
+    while (getline(in, line)) {
+        std::stringstream sline(line);
+        std::string tag;
+        sline >> tag;
+        if (tag == "newmtl") {
+            cur = new Material;
+            sline >> cur->name;
+            materials.push_back(cur);
+        } else if (cur == nullptr) {
+            continue;
+        } else if (tag == "Ka") {
+            sline >> cur->ambient.x >> cur->ambient.y >> cur->ambient.z;
+        } else if (tag == "Kd") {
+            sline >> cur->diffuse.x >> cur->diffuse.y >> cur->diffuse.z;
+        } else if (tag == "Ks") {
+            sline >> cur->specular.x >> cur->specular.y >> cur->specular.z;
+        } else if (tag == "Ns") {
+            sline >> cur->shininess;
+        } else if (tag == "Ni") {
+            sline >> cur->opticalDensity;
+        } else if (tag == "map_Kd") {
+            sline >> cur->diffuseMap;
+        }
+    }
 }
 
 
@@ -205,6 +303,25 @@ Mesh *readObj(std::string filename) {
             sline >> u >> v;
             // ... atribuir textos da malha
             mesh->texts.push_back(new glm::vec2(u, v));
+        } else if (temp == "mtllib") {
+            // biblioteca de materiais: carrega o .mtl referenciado (mesmo diretório do .obj)
+            std::string mtlName;
+            sline >> mtlName;
+            // Store the mtllib path including the .obj's directory so texture
+            // paths later resolve relative to that directory (see loadTexture call).
+            mesh->mtllib = dirOf(filename) + mtlName;
+            readMtl(mesh->mtllib, mesh->materials);
+        } else if (temp == "usemtl") {
+            // Start a new group for the new material (mirrors 'g' behaviour).
+            // This handles files that use usemtl without g lines.
+            std::string matName;
+            sline >> matName;
+            if (!g_atual->faces.empty() && g_atual->material != matName) {
+                mesh->groups.push_back(g_atual);
+                g_atual = new Group;
+                primeiroGrupo = false;
+            }
+            g_atual->material = matName;
         }
     }
     if (g_atual != nullptr) {
@@ -213,7 +330,7 @@ Mesh *readObj(std::string filename) {
     return mesh;
 }
 
-void loadConfig(const char *fileName, std::vector<Mesh*> &meshes, std::vector<Obj3D> &objects) {
+void loadConfig(const char *fileName, std::vector<Mesh*> &meshes, std::vector<Obj3D> &objects, std::vector<Obj3D> &decorations) {
     std::ifstream in(fileName);
     if (!in) {
         fprintf(stderr, "ERROR: could not open config file %s\n", fileName);
@@ -258,8 +375,14 @@ void loadConfig(const char *fileName, std::vector<Mesh*> &meshes, std::vector<Ob
             rotation = glm::rotate(rotation, glm::radians(rz), glm::vec3(0.0f, 0.0f, 1.0f));
             obj.transform = glm::translate(glm::mat4(1.0f), glm::vec3(tx, ty, tz)) * rotation *
                             glm::scale(glm::mat4(1.0f), glm::vec3(sx, sy, sz));
-            obj.collision = collisionFlag != 0;
-            objects.push_back(obj);
+            if (collisionFlag == 2) {
+                // Objeto decorativo: renderizado mas nunca verificado para colisão.
+                obj.collision = false;
+                decorations.push_back(obj);
+            } else {
+                obj.collision = collisionFlag != 0;
+                objects.push_back(obj);
+            }
         }
     }
 }
@@ -282,6 +405,7 @@ int main() {
     glfwMakeContextCurrent(window);
 
     glfwSetWindowSizeCallback(window, resize);
+    glfwSetFramebufferSizeCallback(window, resize);
     glfwSetErrorCallback(logError);
     glfwSetCursorPosCallback(window, mouseCallback);
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -354,18 +478,54 @@ int main() {
     GLint uniView = glGetUniformLocation(shaderProgram, "view");
     GLint uniProjection = glGetUniformLocation(shaderProgram, "projection");
     GLint uniTransform = glGetUniformLocation(shaderProgram, "transform");
+    g_uniProjection = uniProjection;
 
-    // Matriz de projeção padrão (perspective)
-    float aspect = 640.0f / 480.0f;
-    glm::mat4 projection = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+    // Uniformes de material (Phong) e iluminação
+    GLint uniMatAmbient   = glGetUniformLocation(shaderProgram, "matAmbient");
+    GLint uniMatDiffuse   = glGetUniformLocation(shaderProgram, "matDiffuse");
+    GLint uniMatSpecular  = glGetUniformLocation(shaderProgram, "matSpecular");
+    GLint uniMatShininess = glGetUniformLocation(shaderProgram, "matShininess");
+    GLint uniDiffuseTex   = glGetUniformLocation(shaderProgram, "diffuseTexture");
+    GLint uniLightDir     = glGetUniformLocation(shaderProgram, "lightDir");
+    GLint uniLightColor   = glGetUniformLocation(shaderProgram, "lightColor");
+    GLint uniViewPos      = glGetUniformLocation(shaderProgram, "viewPos");
 
-    glUniformMatrix4fv(uniProjection, 1, GL_FALSE, &projection[0][0]);
+    // Textura branca 1x1 usada quando um material não tem map_Kd,
+    // para que a multiplicação pela textura no shader seja neutra.
+    GLuint whiteTexture;
+    glGenTextures(1, &whiteTexture);
+    glBindTexture(GL_TEXTURE_2D, whiteTexture);
+    unsigned char whitePixel[3] = {255, 255, 255};
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, whitePixel);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // O sampler usa sempre a unidade de textura 0.
+    glUniform1i(uniDiffuseTex, 0);
+
+    // Initial projection matrix from actual framebuffer size
+    int fbWidth, fbHeight;
+    glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+    updateProjection(fbWidth, fbHeight);
 
     std::vector<Mesh*> meshes;
     std::vector<Obj3D> objects;
+    std::vector<Obj3D> decorations;
     std::vector<Projectile*> projectiles;
-    loadConfig("config.cfg", meshes, objects);
+    loadConfig("config.cfg", meshes, objects, decorations);
     Mesh *sphereMesh = meshes.size() > 1 ? meshes[1] : nullptr;
+
+    // Carrega as texturas (map_Kd) de cada material para a GPU.
+    for (auto* mesh : meshes) {
+        std::string baseDir = dirOf(mesh->mtllib);
+        for (auto* mat : mesh->materials) {
+            if (!mat->diffuseMap.empty()) {
+                std::string path = baseDir + mat->diffuseMap;
+                mat->textureID = loadTexture(path);
+            }
+        }
+    }
 
     // Carrega os dados de cada malha para a GPU
     for (auto* mesh : meshes) {
@@ -428,8 +588,35 @@ int main() {
         }
     }
 
-    glClearColor(0.3f, 0.3f, 0.3f, 1.0f);
+    glClearColor(0.98f, 0.69f, 0.25f, 1.0f);
+    const glm::vec3 clearColor(0.98f, 0.6f, 0.21f);
     const float cameraSpeed = 0.05f;
+
+    // Resolve o material de um grupo (por nome) e envia suas propriedades Phong
+    // ao shader, ligando a textura difusa (ou a textura branca padrão).
+    auto applyMaterial = [&](Mesh *mesh, Group *g) {
+        Material *mat = nullptr;
+        for (auto* m : mesh->materials) {
+            if (m->name == g->material) { mat = m; break; }
+        }
+        glActiveTexture(GL_TEXTURE0);
+        if (mat) {
+            glUniform3fv(uniMatAmbient, 1, &mat->ambient[0]);
+            glUniform3fv(uniMatDiffuse, 1, &mat->diffuse[0]);
+            glUniform3fv(uniMatSpecular, 1, &mat->specular[0]);
+            glUniform1f(uniMatShininess, mat->shininess);
+            GLuint tid = mat->textureID != 0 ? mat->textureID : whiteTexture;
+            glBindTexture(GL_TEXTURE_2D, tid);
+        } else {
+            // Material padrão para malhas sem .mtl (cubo, esfera).
+            glUniform3f(uniMatAmbient, 0.2f, 0.2f, 0.2f);
+            glUniform3f(uniMatDiffuse, 0.6f, 0.6f, 0.6f);
+            glUniform3f(uniMatSpecular, 0.3f, 0.3f, 0.3f);
+            glUniform1f(uniMatShininess, 16.0f);
+            glBindTexture(GL_TEXTURE_2D, whiteTexture);
+        }
+    };
+
     double lastTime = glfwGetTime();
     bool spacePressed = false;
     while (!glfwWindowShouldClose(window)) {
@@ -438,17 +625,19 @@ int main() {
         lastTime = currentTime;
 
         // Processa entrada do teclado (WASD) para translação da câmera
+        glm::vec3 flatFront = glm::normalize(glm::vec3(cameraFront.x, 0.0f, cameraFront.z));
+        glm::vec3 flatRight = glm::normalize(glm::cross(flatFront, cameraUp));
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
-            cameraPos += cameraSpeed * cameraFront;
+            cameraPos += cameraSpeed * flatFront;
         }
         if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
-            cameraPos -= cameraSpeed * cameraFront;
+            cameraPos -= cameraSpeed * flatFront;
         }
         if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
-            cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
+            cameraPos -= flatRight * cameraSpeed;
         }
         if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
-            cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
+            cameraPos += flatRight * cameraSpeed;
         }
 
         // Dispara uma esfera na posição da câmera na direção que ela aponta
@@ -468,6 +657,12 @@ int main() {
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
         glUniformMatrix4fv(uniView, 1, GL_FALSE, &view[0][0]);
 
+        // Directional light from directly overhead (sky), color derived from clear color
+        glm::vec3 skyDir = glm::normalize(glm::vec3(glm::sin(glm::radians(60.0f)), glm::cos(glm::radians(60.0f)), 0.0f));
+        glUniform3fv(uniLightDir, 1, &skyDir[0]);
+        glUniform3fv(uniLightColor, 1, &clearColor[0]);
+        glUniform3f(uniViewPos, cameraPos.x, cameraPos.y, cameraPos.z);
+
         // Atualiza posição e verifica expiração de cada projétil
         for (auto it = projectiles.begin(); it != projectiles.end(); ) {
             if ((*it)->step(deltaTime, objects)) {
@@ -483,6 +678,16 @@ int main() {
         for (const auto& obj : objects) {
             glUniformMatrix4fv(uniTransform, 1, GL_FALSE, &obj.transform[0][0]);
             for (const auto& g : obj.mesh->groups) {
+                applyMaterial(obj.mesh, g);
+                glBindVertexArray(g->VAO);
+                glDrawArrays(GL_TRIANGLES, 0, g->numberOfVertices);
+            }
+        }
+        // Desenha os objetos decorativos (sem colisão)
+        for (const auto& obj : decorations) {
+            glUniformMatrix4fv(uniTransform, 1, GL_FALSE, &obj.transform[0][0]);
+            for (const auto& g : obj.mesh->groups) {
+                applyMaterial(obj.mesh, g);
                 glBindVertexArray(g->VAO);
                 glDrawArrays(GL_TRIANGLES, 0, g->numberOfVertices);
             }
@@ -491,6 +696,7 @@ int main() {
         for (const auto& p : projectiles) {
             glUniformMatrix4fv(uniTransform, 1, GL_FALSE, &p->transform[0][0]);
             for (const auto& g : p->mesh->groups) {
+                applyMaterial(p->mesh, g);
                 glBindVertexArray(g->VAO);
                 glDrawArrays(GL_TRIANGLES, 0, g->numberOfVertices);
             }
