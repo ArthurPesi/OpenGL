@@ -10,6 +10,9 @@ public:
     glm::mat4 transform = glm::mat4(1.0f);
     Mesh *mesh = nullptr;
     bool reflect = false;
+    glm::vec3 worldMin;
+    glm::vec3 worldMax;
 
+    void init();
     bool checkSphereCollision(const glm::vec3 &p, float r, glm::vec3 &normal, glm::vec3 &closest) const;
 };

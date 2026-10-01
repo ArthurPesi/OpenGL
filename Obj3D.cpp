@@ -5,10 +5,8 @@
 #include <glm/common.hpp>
 #include <glm/geometric.hpp>
 
-bool Obj3D::checkSphereCollision(const glm::vec3 &p, float r, glm::vec3 &normal, glm::vec3 &closest) const {
-    if (mesh == nullptr) {
-        return false;
-    }
+void Obj3D::init() {
+    if (mesh == nullptr) return;
     glm::vec3 corners[8];
     for (int i = 0; i < 8; i++) {
         glm::vec3 corner(
@@ -18,11 +16,17 @@ bool Obj3D::checkSphereCollision(const glm::vec3 &p, float r, glm::vec3 &normal,
         glm::vec4 transformed = transform * glm::vec4(corner, 1.0f);
         corners[i] = glm::vec3(transformed);
     }
-    glm::vec3 worldMin = corners[0];
-    glm::vec3 worldMax = corners[0];
+    worldMin = corners[0];
+    worldMax = corners[0];
     for (int i = 1; i < 8; i++) {
         worldMin = glm::min(worldMin, corners[i]);
         worldMax = glm::max(worldMax, corners[i]);
+    }
+}
+
+bool Obj3D::checkSphereCollision(const glm::vec3 &p, float r, glm::vec3 &normal, glm::vec3 &closest) const {
+    if (mesh == nullptr) {
+        return false;
     }
     closest = glm::clamp(p, worldMin, worldMax);
     glm::vec3 diff = p - closest;

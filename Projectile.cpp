@@ -4,7 +4,7 @@
 
 const float Projectile::PROJECTILE_SPEED = 22.0f;
 const float Projectile::PROJECTILE_LIFETIME = 1.2f;
-const float Projectile::RADIUS = 0.5f;
+const float Projectile::RADIUS = 0.25f;
 
 Projectile::Projectile(Mesh *mesh, glm::vec3 position, glm::vec3 direction)
     : position(position), remainingTime(PROJECTILE_LIFETIME) {

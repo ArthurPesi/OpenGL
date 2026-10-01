@@ -31,7 +31,6 @@ constexpr float kPitchLimit     = 89.0f;   // clamp to avoid gimbal flip
 constexpr float kCameraSpeed    = 3.0f;    // units per second (framerate-independent)
 constexpr int   kDecorationFlag = 2;       // config collision flag for draw-only objects
 
-// Scene clear color, reused as the directional light color.
 const glm::vec3 kClearColor(0.98f, 0.69f, 0.25f);
 
 GLint g_uniProjection = -1;
@@ -153,11 +152,7 @@ std::string dirOf(const std::string &path) {
     return path.substr(0, slash + 1);
 }
 
-// Loads an image into an OpenGL texture and returns its id. Returns 0 on failure
-// (callers fall back to the default white texture). stb_image decodes BMP, JPG,
-// PNG, TGA, GIF, PSD, HDR, PIC and PNM, auto-detecting the format from content.
 GLuint loadTexture(const std::string &filename) {
-    // stb loads top-left origin; OpenGL expects bottom-left, so flip on load.
     stbi_set_flip_vertically_on_load(true);
 
     int width, height, channels;
@@ -167,15 +162,13 @@ GLuint loadTexture(const std::string &filename) {
                 filename.c_str(), stbi_failure_reason());
         return 0;
     }
-
-    // Map channel count to GL formats (grayscale, RGB, RGBA).
     GLenum format;
     if (channels == 1) {
         format = GL_RED;
     } else if (channels == 4) {
         format = GL_RGBA;
     } else {
-        format = GL_RGB; // 3 channels, and a safe default
+        format = GL_RGB; 
     }
 
     GLuint tex;
@@ -194,7 +187,6 @@ GLuint loadTexture(const std::string &filename) {
     return tex;
 }
 
-// Parses a Wavefront .mtl file into Material objects appended to `materials`.
 void readMtl(const std::string &filename, std::vector<Material> &materials) {
     std::ifstream in(filename);
     if (!in) {
@@ -320,11 +312,11 @@ std::unique_ptr<Mesh> readObj(const std::string &filename) {
                 }
                 for (int i = 0; i < count; i++) {
                     int next = (i + 1) % count;
-                    Face tris;
-                    tris.push(v[i], t[i], n[i]);
-                    tris.push(v[next], t[next], n[next]);
-                    tris.push(centerIdx, 0, 0);
-                    cur.faces.push_back(tris);
+                    Face parte;
+                    parte.push(v[i], t[i], n[i]);
+                    parte.push(v[next], t[next], n[next]);
+                    parte.push(centerIdx, 0, 0);
+                    cur.faces.push_back(parte);
                 }
             }
         } else if (temp == "g") {
@@ -367,7 +359,7 @@ std::unique_ptr<Mesh> readObj(const std::string &filename) {
 }
 
 void loadConfig(const char *fileName, std::vector<std::unique_ptr<Mesh>> &meshes,
-                std::vector<Obj3D> &objects, std::vector<Obj3D> &decorations) {
+                std::vector<Obj3D> &objects) {
     std::ifstream in(fileName);
     if (!in) {
         fprintf(stderr, "ERROR: could not open config file %s\n", fileName);
@@ -412,14 +404,9 @@ void loadConfig(const char *fileName, std::vector<std::unique_ptr<Mesh>> &meshes
             rotation = glm::rotate(rotation, glm::radians(rz), glm::vec3(0.0f, 0.0f, 1.0f));
             obj.transform = glm::translate(glm::mat4(1.0f), glm::vec3(tx, ty, tz)) * rotation *
                             glm::scale(glm::mat4(1.0f), glm::vec3(sx, sy, sz));
-            if (collisionFlag == kDecorationFlag) {
-                // Objeto decorativo: renderizado mas nunca verificado para colisão.
-                obj.reflect = false;
-                decorations.push_back(obj);
-            } else {
-                obj.reflect = collisionFlag != 0;
-                objects.push_back(obj);
-            }
+            obj.reflect = collisionFlag != 0;
+            obj.init();
+            objects.push_back(obj);
         }
     }
 }
@@ -518,12 +505,10 @@ int main() {
 
     std::vector<std::unique_ptr<Mesh>> meshes;
     std::vector<Obj3D> objects;
-    std::vector<Obj3D> decorations;
     std::vector<std::unique_ptr<Projectile>> projectiles;
-    loadConfig("config.cfg", meshes, objects, decorations);
+    loadConfig("config.cfg", meshes, objects);
     Mesh *sphereMesh = meshes.size() > 1 ? meshes[1].get() : nullptr;
 
-    // Carrega as texturas (map_Kd) de cada material para a GPU.
     for (auto &mesh : meshes) {
         std::string baseDir = dirOf(mesh->mtllib);
         for (auto &mat : mesh->materials) {
@@ -595,7 +580,6 @@ int main() {
 
     glClearColor(kClearColor.r, kClearColor.g, kClearColor.b, 1.0f);
 
-    // Material padrão para malhas sem .mtl (cubo, esfera).
     Material defaultMaterial;
     defaultMaterial.ambient  = glm::vec3(0.2f, 0.2f, 0.2f);
     defaultMaterial.diffuse  = glm::vec3(0.6f, 0.6f, 0.6f);
@@ -628,7 +612,6 @@ int main() {
         }
     };
 
-    // Luz direcional fixa vinda do céu (invariante no loop).
     const glm::vec3 skyDir = glm::normalize(glm::vec3(
         std::sin(glm::radians(60.0f)), std::cos(glm::radians(60.0f)), 0.0f));
     glUniform3fv(uniLightDir, 1, &skyDir[0]);
@@ -687,9 +670,6 @@ int main() {
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         for (const auto &obj : objects) {
-            drawObject(obj);
-        }
-        for (const auto &obj : decorations) {
             drawObject(obj);
         }
         for (const auto &p : projectiles) {
