@@ -7,7 +7,7 @@ find_package(glfw3 3.3 REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(glm REQUIRED)
 
-add_executable(hexagon main.cpp Mesh.cpp Group.cpp Face.cpp Obj3D.cpp Projectile.cpp stb_image_impl.cpp)
+add_executable(hexagon main.cpp Face.cpp Obj3D.cpp Projectile.cpp stb_image_impl.cpp)
 
 # stb_image.h is third-party and emits many warnings; isolate its implementation
 # in its own translation unit and exempt only that file from -Werror.

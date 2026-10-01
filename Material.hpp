@@ -12,7 +12,6 @@ public:
     glm::vec3 diffuse  = glm::vec3(0.8f);  // Kd
     glm::vec3 specular = glm::vec3(0.0f);  // Ks
     float shininess    = 8.0f;             // Ns (specular exponent)
-    float opticalDensity = 1.0f;           // Ni (index of refraction, kept for completeness)
     std::string diffuseMap;                // map_Kd (texture file, relative to the .mtl)
     GLuint textureID = 0;                  // GL texture handle (0 = use default white texture)
 };

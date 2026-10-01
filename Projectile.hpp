@@ -11,6 +11,8 @@
 class Projectile : public Obj3D {
 public:
     static const float PROJECTILE_SPEED;
+    static const float PROJECTILE_LIFETIME;   // seconds before the projectile expires
+    static const float RADIUS;        // fallback when the mesh has no extent
 
     Projectile(Mesh *mesh, glm::vec3 position, glm::vec3 direction);
     bool step(float deltaTime, std::vector<Obj3D> &objects);

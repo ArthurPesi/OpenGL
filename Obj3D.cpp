@@ -24,10 +24,7 @@ bool Obj3D::checkSphereCollision(const glm::vec3 &p, float r, glm::vec3 &normal,
         worldMin = glm::min(worldMin, corners[i]);
         worldMax = glm::max(worldMax, corners[i]);
     }
-    closest = glm::vec3(
-        (p.x < worldMin.x) ? worldMin.x : ((p.x > worldMax.x) ? worldMax.x : p.x),
-        (p.y < worldMin.y) ? worldMin.y : ((p.y > worldMax.y) ? worldMax.y : p.y),
-        (p.z < worldMin.z) ? worldMin.z : ((p.z > worldMax.z) ? worldMax.z : p.z));
+    closest = glm::clamp(p, worldMin, worldMax);
     glm::vec3 diff = p - closest;
     float distSq = glm::dot(diff, diff);
     if (distSq > r * r) {

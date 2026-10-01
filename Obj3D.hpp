@@ -7,9 +7,9 @@
 
 class Obj3D {
 public:
-    glm::mat4 transform;
-    Mesh *mesh;
-    bool collision;
+    glm::mat4 transform = glm::mat4(1.0f);
+    Mesh *mesh = nullptr;
+    bool reflect = false;
 
     bool checkSphereCollision(const glm::vec3 &p, float r, glm::vec3 &normal, glm::vec3 &closest) const;
 };
