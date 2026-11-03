@@ -1,0 +1,11 @@
+# Material for track.obj
+# Generated for use with road.jpg texture
+
+newmtl road
+Ka 0.200 0.200 0.200
+Kd 1.000 1.000 1.000
+Ks 0.100 0.100 0.100
+Ns 10.000
+d 1.000
+illum 2
+map_Kd road.jpg

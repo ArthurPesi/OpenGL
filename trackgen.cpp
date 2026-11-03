@@ -1,0 +1,456 @@
+// trackgen — standalone 2D tool to draw a race track as a uniform cubic B-spline
+// and export it as a triangulated road mesh (.obj) for the main hexagon pipeline.
+//
+// Controls:
+//   Left click : add a control point
+//   Space      : close the loop (wrap a curve from last control point back to first)
+//   Esc        : build the road mesh from inner/outer offset splines, write
+//                objects/track.obj, and exit.
+//
+// The 2D curve lives in the xy plane (pixel space); the exported mesh is placed in
+// the xz plane (flat on the ground, y=0) so it drops straight into the 3D scene.
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <GL/glew.h>
+#include <GLFW/glfw3.h>
+#include <glm/vec2.hpp>
+#include <glm/vec3.hpp>
+#include <glm/mat4x4.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <cmath>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <vector>
+
+// ---- Window / tool constants ----
+constexpr int   kWindowWidth     = 800;
+constexpr int   kWindowHeight    = 600;
+constexpr int   kGlVersionMajor  = 4;
+constexpr int   kGlVersionMinor  = 1;
+constexpr int   kSamplesPerSeg   = 24;     // spline samples per B-spline segment
+constexpr float kTrackWidth      = 60.0f;  // road width in pixels
+constexpr float kWorldScale      = 1.0f / 50.0f; // pixels -> world units for export
+constexpr float kPointSize       = 8.0f;
+
+const glm::vec3 kClearColor(0.12f, 0.12f, 0.14f);
+const glm::vec3 kPointColor(1.0f, 0.85f, 0.2f);   // control points
+const glm::vec3 kLineColor(0.3f, 0.8f, 1.0f);     // centerline spline
+const glm::vec3 kEdgeColor(0.9f, 0.4f, 0.4f);     // inner/outer offset preview
+
+// ---- Shared state driven by GLFW callbacks ----
+std::vector<glm::vec2> g_controlPoints;
+bool g_closed = false;
+bool g_dirty = true;          // geometry needs re-upload
+bool g_doExport = false;      // Esc pressed: export then quit
+
+// --- Helpers copied from main.cpp (this tool is self-contained) --------------
+
+// Reads a whole file into a string.
+std::string readFile(const char *fileName) {
+    std::ifstream in(fileName);
+    if (!in) {
+        fprintf(stderr, "ERROR: could not open file %s\n", fileName);
+        return std::string();
+    }
+    std::stringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+// Compiles a shader of the given type; returns 0 (and logs) on failure.
+GLuint compileShader(GLenum type, const char *src) {
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1, &src, NULL);
+    glCompileShader(shader);
+    GLint compiled = GL_FALSE;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
+    if (compiled == GL_FALSE) {
+        GLint length = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
+        std::vector<char> log(length > 0 ? length : 1);
+        glGetShaderInfoLog(shader, (GLsizei)log.size(), NULL, log.data());
+        fprintf(stderr, "ERROR: shader compilation failed:\n%s\n", log.data());
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+// Links a vertex + fragment shader into a program; returns 0 (and logs) on failure.
+GLuint linkProgram(GLuint vs, GLuint fs) {
+    GLuint program = glCreateProgram();
+    glAttachShader(program, fs);
+    glAttachShader(program, vs);
+    glLinkProgram(program);
+    GLint linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (linked == GL_FALSE) {
+        GLint length = 0;
+        glGetProgramiv(program, GL_INFO_LOG_LENGTH, &length);
+        std::vector<char> log(length > 0 ? length : 1);
+        glGetProgramInfoLog(program, (GLsizei)log.size(), NULL, log.data());
+        fprintf(stderr, "ERROR: program link failed:\n%s\n", log.data());
+        glDeleteProgram(program);
+        return 0;
+    }
+    return program;
+}
+
+GLint getUniform(GLuint program, const char *name) {
+    GLint loc = glGetUniformLocation(program, name);
+    if (loc < 0) {
+        fprintf(stderr, "WARNING: uniform '%s' not found in shader program\n", name);
+    }
+    return loc;
+}
+
+// --- B-spline -----------------------------------------------------------------
+
+// Evaluate one uniform cubic B-spline segment at parameter t in [0,1] from four
+// consecutive control points. Approximating basis (curve passes near, not through).
+glm::vec2 bsplinePoint(const glm::vec2 &p0, const glm::vec2 &p1,
+                       const glm::vec2 &p2, const glm::vec2 &p3, float t) {
+    float t2 = t * t;
+    float t3 = t2 * t;
+    float b0 = (-t3 + 3.0f * t2 - 3.0f * t + 1.0f) / 6.0f;
+    float b1 = (3.0f * t3 - 6.0f * t2 + 4.0f) / 6.0f;
+    float b2 = (-3.0f * t3 + 3.0f * t2 + 3.0f * t + 1.0f) / 6.0f;
+    float b3 = t3 / 6.0f;
+    return b0 * p0 + b1 * p1 + b2 * p2 + b3 * p3;
+}
+
+// Sample the whole spline. Open: segments 0..n-4. Closed: n segments wrapping mod n
+// (the wrap segments bridge the last control points back to the first, closing the
+// cycle). Returns empty if there aren't enough points to form a segment.
+std::vector<glm::vec2> evalBSpline(const std::vector<glm::vec2> &pts, bool closed) {
+    std::vector<glm::vec2> out;
+    int n = (int)pts.size();
+    if (n < 4) return out;
+
+    int segCount = closed ? n : n - 3;
+    for (int s = 0; s < segCount; s++) {
+        const glm::vec2 &p0 = pts[s % n];
+        const glm::vec2 &p1 = pts[(s + 1) % n];
+        const glm::vec2 &p2 = pts[(s + 2) % n];
+        const glm::vec2 &p3 = pts[(s + 3) % n];
+        // Include the endpoint only on the last segment of an open curve so we don't
+        // duplicate shared vertices between adjacent segments.
+        int last = (s == segCount - 1 && !closed) ? kSamplesPerSeg : kSamplesPerSeg - 1;
+        for (int i = 0; i <= last; i++) {
+            float t = (float)i / (float)kSamplesPerSeg;
+            out.push_back(bsplinePoint(p0, p1, p2, p3, t));
+        }
+    }
+    return out;
+}
+
+// --- Offset splines + mesh export --------------------------------------------
+
+// Build inner/outer edges by offsetting the centerline along its 2D normal.
+void buildOffsets(const std::vector<glm::vec2> &center, bool closed,
+                  std::vector<glm::vec2> &inner, std::vector<glm::vec2> &outer) {
+    int n = (int)center.size();
+    float half = kTrackWidth * 0.5f;
+    for (int i = 0; i < n; i++) {
+        glm::vec2 prev, next;
+        if (closed) {
+            prev = center[(i - 1 + n) % n];
+            next = center[(i + 1) % n];
+        } else {
+            prev = center[i > 0 ? i - 1 : i];
+            next = center[i < n - 1 ? i + 1 : i];
+        }
+        glm::vec2 tangent = next - prev;
+        float len = glm::length(tangent);
+        if (len > 1e-6f) tangent /= len;
+        glm::vec2 normal(-tangent.y, tangent.x); // 90° rotation in 2D
+        outer.push_back(center[i] + normal * half);
+        inner.push_back(center[i] - normal * half);
+    }
+}
+
+// Write the road ribbon between inner & outer as an .obj in the xz plane (y=0).
+// Emits v / vt / vn / f — the exact subset readObj() in main.cpp consumes.
+bool writeObj(const std::string &path, const std::vector<glm::vec2> &inner,
+              const std::vector<glm::vec2> &outer, bool closed) {
+    int n = (int)inner.size();
+    if (n < 2) {
+        fprintf(stderr, "ERROR: not enough samples to build a mesh (need >= 2)\n");
+        return false;
+    }
+
+    // Centroid in pixel space so the exported track sits near the world origin.
+    glm::vec2 centroid(0.0f);
+    for (int i = 0; i < n; i++) centroid += (inner[i] + outer[i]);
+    centroid /= (float)(2 * n);
+
+    // 2D pixel (x,y) -> 3D world (x,0,z). Flip z so the layout isn't mirrored
+    // relative to the on-screen view (screen y grows downward).
+    auto toWorld = [&](const glm::vec2 &p) {
+        return glm::vec3((p.x - centroid.x) * kWorldScale, 0.0f,
+                         -(p.y - centroid.y) * kWorldScale);
+    };
+
+    std::ofstream out(path);
+    if (!out) {
+        fprintf(stderr, "ERROR: could not open %s for writing\n", path.c_str());
+        return false;
+    }
+
+    out << "# Race track generated by trackgen\n";
+    out << "mtllib track.mtl\n";
+    out << "o track\n";
+    out << "usemtl road\n";
+
+    // Vertices: interleave outer[i], inner[i]. 1-based indices: outer_i = 2*i+1,
+    // inner_i = 2*i+2.
+    float arc = 0.0f;
+    for (int i = 0; i < n; i++) {
+        glm::vec3 wo = toWorld(outer[i]);
+        glm::vec3 wi = toWorld(inner[i]);
+        out << "v " << wo.x << " " << wo.y << " " << wo.z << "\n";
+        out << "v " << wi.x << " " << wi.y << " " << wi.z << "\n";
+    }
+    // Texture coords: u across the road (0 outer, 1 inner), v tiled along arc length.
+    for (int i = 0; i < n; i++) {
+        if (i > 0) {
+            glm::vec3 a = toWorld(outer[i]);
+            glm::vec3 b = toWorld(outer[i - 1]);
+            arc += glm::length(a - b);
+        }
+        out << "vt 0.0 " << arc << "\n";
+        out << "vt 1.0 " << arc << "\n";
+    }
+    // Single up-facing normal, shared by every vertex.
+    out << "vn 0.0 1.0 0.0\n";
+
+    // Faces: two CCW triangles (viewed from above) per pair of consecutive samples.
+    int segs = closed ? n : n - 1;
+    for (int i = 0; i < segs; i++) {
+        int j = (i + 1) % n;
+        int o0 = 2 * i + 1, in0 = 2 * i + 2;
+        int o1 = 2 * j + 1, in1 = 2 * j + 2;
+        // f  v/vt/vn  — all share normal index 1.
+        out << "f " << o0 << "/" << o0 << "/1 "
+                    << in0 << "/" << in0 << "/1 "
+                    << in1 << "/" << in1 << "/1\n";
+        out << "f " << o0 << "/" << o0 << "/1 "
+                    << in1 << "/" << in1 << "/1 "
+                    << o1 << "/" << o1 << "/1\n";
+    }
+    printf("Wrote %s (%d vertices, %d triangles)\n", path.c_str(), 2 * n, 2 * segs);
+    return true;
+}
+
+// --- GLFW callbacks -----------------------------------------------------------
+
+void mouseButtonCallback(GLFWwindow *window, int button, int action, int /*mods*/) {
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS && !g_closed) {
+        double x, y;
+        glfwGetCursorPos(window, &x, &y);
+        g_controlPoints.push_back(glm::vec2((float)x, (float)y));
+        g_dirty = true;
+    }
+}
+
+void keyCallback(GLFWwindow *window, int key, int /*scancode*/, int action, int /*mods*/) {
+    if (action != GLFW_PRESS) return;
+    if (key == GLFW_KEY_SPACE) {
+        if (g_controlPoints.size() >= 4) {
+            g_closed = true;
+            g_dirty = true;
+        } else {
+            fprintf(stderr, "Need at least 4 points to close the loop\n");
+        }
+    } else if (key == GLFW_KEY_ESCAPE) {
+        g_doExport = true;
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+    }
+}
+
+void logError(int code, const char *description) {
+    fprintf(stderr, "Glfw error code %d: %s\n", code, description);
+}
+
+int main() {
+    if (!glfwInit()) {
+        fprintf(stderr, "ERROR: could not start GLFW3\n");
+        return 1;
+    }
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, kGlVersionMajor);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, kGlVersionMinor);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    GLFWwindow *window = glfwCreateWindow(kWindowWidth, kWindowHeight,
+                                          "Track Generator — click points, Space to close, Esc to export",
+                                          NULL, NULL);
+    if (!window) {
+        fprintf(stderr, "ERROR: could not open window with GLFW3\n");
+        glfwTerminate();
+        return 1;
+    }
+    glfwMakeContextCurrent(window);
+    glfwSetErrorCallback(logError);
+    glfwSetMouseButtonCallback(window, mouseButtonCallback);
+    glfwSetKeyCallback(window, keyCallback);
+
+    glewExperimental = GL_TRUE;
+    if (glewInit() != GLEW_OK) {
+        fprintf(stderr, "ERROR: glewInit failed\n");
+        glfwTerminate();
+        return 1;
+    }
+
+    std::string vertexSrc = readFile("track_vertex.vs");
+    std::string fragmentSrc = readFile("track_fragment.fs");
+    if (vertexSrc.empty() || fragmentSrc.empty()) {
+        fprintf(stderr, "ERROR: could not load shaders\n");
+        glfwTerminate();
+        return 1;
+    }
+    GLuint vs = compileShader(GL_VERTEX_SHADER, vertexSrc.c_str());
+    GLuint fs = compileShader(GL_FRAGMENT_SHADER, fragmentSrc.c_str());
+    if (vs == 0 || fs == 0) {
+        glfwTerminate();
+        return 1;
+    }
+    GLuint program = linkProgram(vs, fs);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (program == 0) {
+        glfwTerminate();
+        return 1;
+    }
+    glUseProgram(program);
+
+    GLint uniProjection = getUniform(program, "projection");
+    GLint uniColor = getUniform(program, "color");
+    GLint uniPointSize = getUniform(program, "pointSize");
+
+    // On Retina / HiDPI displays the framebuffer is larger than the window
+    // (e.g. 1600x1200 for an 800x600 window). The viewport must cover the whole
+    // framebuffer, while the ortho projection is built in *window* coordinates —
+    // the same space glfwGetCursorPos() reports — so clicks map 1:1 to the curve.
+    int winW, winH, fbW, fbH;
+    glfwGetWindowSize(window, &winW, &winH);
+    glfwGetFramebufferSize(window, &fbW, &fbH);
+    glViewport(0, 0, fbW, fbH);
+
+    // Ortho in window pixel space: (0,0) top-left, y grows downward to match mouse.
+    glm::mat4 projection = glm::ortho(0.0f, (float)winW,
+                                      (float)winH, 0.0f, -1.0f, 1.0f);
+    glUniformMatrix4fv(uniProjection, 1, GL_FALSE, &projection[0][0]);
+    glUniform1f(uniPointSize, kPointSize);
+
+    // Separate VBOs for control points and the spline line, per requirement.
+    GLuint pointsVAO, pointsVBO, lineVAO, lineVBO, edgeVAO, edgeVBO;
+    glGenVertexArrays(1, &pointsVAO);
+    glGenBuffers(1, &pointsVBO);
+    glGenVertexArrays(1, &lineVAO);
+    glGenBuffers(1, &lineVBO);
+    glGenVertexArrays(1, &edgeVAO);
+    glGenBuffers(1, &edgeVBO);
+
+    auto setupAttrib = [](GLuint vao, GLuint vbo) {
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+    };
+    setupAttrib(pointsVAO, pointsVBO);
+    setupAttrib(lineVAO, lineVBO);
+    setupAttrib(edgeVAO, edgeVBO);
+
+    // Point size is driven by the vertex shader (gl_PointSize); core profile
+    // ignores glPointSize(), so GL_PROGRAM_POINT_SIZE must be enabled.
+    glEnable(GL_PROGRAM_POINT_SIZE);
+
+    int lineCount = 0;   // samples on the centerline
+    int edgeCount = 0;   // samples per edge (inner/outer concatenated -> 2*edgeCount)
+
+    glClearColor(kClearColor.r, kClearColor.g, kClearColor.b, 1.0f);
+
+    while (!glfwWindowShouldClose(window)) {
+        if (g_dirty) {
+            // Control points buffer.
+            glBindBuffer(GL_ARRAY_BUFFER, pointsVBO);
+            glBufferData(GL_ARRAY_BUFFER, g_controlPoints.size() * sizeof(glm::vec2),
+                         g_controlPoints.data(), GL_DYNAMIC_DRAW);
+
+            // Centerline spline buffer.
+            std::vector<glm::vec2> spline = evalBSpline(g_controlPoints, g_closed);
+            lineCount = (int)spline.size();
+            glBindBuffer(GL_ARRAY_BUFFER, lineVBO);
+            glBufferData(GL_ARRAY_BUFFER, spline.size() * sizeof(glm::vec2),
+                         spline.data(), GL_DYNAMIC_DRAW);
+
+            // Inner/outer edge preview (concatenated outer then inner).
+            edgeCount = 0;
+            if (!spline.empty()) {
+                std::vector<glm::vec2> inner, outer;
+                buildOffsets(spline, g_closed, inner, outer);
+                edgeCount = (int)outer.size();
+                std::vector<glm::vec2> edges;
+                edges.reserve(outer.size() + inner.size());
+                edges.insert(edges.end(), outer.begin(), outer.end());
+                edges.insert(edges.end(), inner.begin(), inner.end());
+                glBindBuffer(GL_ARRAY_BUFFER, edgeVBO);
+                glBufferData(GL_ARRAY_BUFFER, edges.size() * sizeof(glm::vec2),
+                             edges.data(), GL_DYNAMIC_DRAW);
+            }
+            g_dirty = false;
+        }
+
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // Edge previews.
+        if (edgeCount > 0) {
+            glUniform3fv(uniColor, 1, &kEdgeColor[0]);
+            glBindVertexArray(edgeVAO);
+            GLenum mode = g_closed ? GL_LINE_LOOP : GL_LINE_STRIP;
+            glDrawArrays(mode, 0, edgeCount);             // outer
+            glDrawArrays(mode, edgeCount, edgeCount);     // inner
+        }
+
+        // Centerline spline.
+        if (lineCount > 0) {
+            glUniform3fv(uniColor, 1, &kLineColor[0]);
+            glBindVertexArray(lineVAO);
+            glDrawArrays(g_closed ? GL_LINE_LOOP : GL_LINE_STRIP, 0, lineCount);
+        }
+
+        // Control points on top.
+        if (!g_controlPoints.empty()) {
+            glUniform3fv(uniColor, 1, &kPointColor[0]);
+            glBindVertexArray(pointsVAO);
+            glDrawArrays(GL_POINTS, 0, (GLsizei)g_controlPoints.size());
+        }
+
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
+
+    // Esc path: build the mesh and export.
+    if (g_doExport) {
+        std::vector<glm::vec2> spline = evalBSpline(g_controlPoints, g_closed);
+        if (spline.size() < 2) {
+            fprintf(stderr, "ERROR: need at least 4 control points to export a track\n");
+        } else {
+            std::vector<glm::vec2> inner, outer;
+            buildOffsets(spline, g_closed, inner, outer);
+            writeObj("objects/track.obj", inner, outer, g_closed);
+        }
+    }
+
+    glDeleteVertexArrays(1, &pointsVAO);
+    glDeleteVertexArrays(1, &lineVAO);
+    glDeleteVertexArrays(1, &edgeVAO);
+    glDeleteBuffers(1, &pointsVBO);
+    glDeleteBuffers(1, &lineVBO);
+    glDeleteBuffers(1, &edgeVBO);
+    glDeleteProgram(program);
+    glfwTerminate();
+    return 0;
+}
