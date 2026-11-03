@@ -84,7 +84,7 @@ void mouseCallback(GLFWwindow *window, double xpos, double ypos) {
     }
 }
 
-// Reads a whole file into a string. Returns an empty string on failure.
+// Reads a whole file into a string. 
 std::string readFile(const char *fileName) {
     std::ifstream in(fileName);
     if (!in) {
@@ -135,8 +135,6 @@ GLuint linkProgram(GLuint vs, GLuint fs) {
     return program;
 }
 
-// Fetches a uniform location, warning once if the shader doesn't declare it.
-// (glUniform* silently ignores a location of -1, so uses stay safe.)
 GLint getUniform(GLuint program, const char *name) {
     GLint loc = glGetUniformLocation(program, name);
     if (loc < 0) {
