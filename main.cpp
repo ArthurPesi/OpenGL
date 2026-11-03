@@ -478,9 +478,52 @@ int main() {
     GLint uniMatSpecular  = getUniform(shaderProgram, "matSpecular");
     GLint uniMatShininess = getUniform(shaderProgram, "matShininess");
     GLint uniDiffuseTex   = getUniform(shaderProgram, "diffuseTexture");
-    GLint uniLightDir     = getUniform(shaderProgram, "lightDir");
-    GLint uniLightColor   = getUniform(shaderProgram, "lightColor");
     GLint uniViewPos      = getUniform(shaderProgram, "viewPos");
+
+    // Directional light
+    GLint uniDirDirection = getUniform(shaderProgram, "dirLight.direction");
+    GLint uniDirAmbient   = getUniform(shaderProgram, "dirLight.ambient");
+    GLint uniDirDiffuse   = getUniform(shaderProgram, "dirLight.diffuse");
+    GLint uniDirSpecular  = getUniform(shaderProgram, "dirLight.specular");
+
+    // Point lights (array of NR_POINT_LIGHTS, must match fragment.fs)
+    const int kNumPointLights = 4;
+    struct PointLightLoc {
+        GLint position, ambient, diffuse, specular, constant, linear, quadratic;
+    } uniPointLights[kNumPointLights];
+    for (int i = 0; i < kNumPointLights; i++) {
+        char name[64];
+        snprintf(name, sizeof(name), "pointLights[%d].position", i);
+        uniPointLights[i].position = getUniform(shaderProgram, name);
+        snprintf(name, sizeof(name), "pointLights[%d].ambient", i);
+        uniPointLights[i].ambient = getUniform(shaderProgram, name);
+        snprintf(name, sizeof(name), "pointLights[%d].diffuse", i);
+        uniPointLights[i].diffuse = getUniform(shaderProgram, name);
+        snprintf(name, sizeof(name), "pointLights[%d].specular", i);
+        uniPointLights[i].specular = getUniform(shaderProgram, name);
+        snprintf(name, sizeof(name), "pointLights[%d].constant", i);
+        uniPointLights[i].constant = getUniform(shaderProgram, name);
+        snprintf(name, sizeof(name), "pointLights[%d].linear", i);
+        uniPointLights[i].linear = getUniform(shaderProgram, name);
+        snprintf(name, sizeof(name), "pointLights[%d].quadratic", i);
+        uniPointLights[i].quadratic = getUniform(shaderProgram, name);
+    }
+
+    // Spotlight (camera flashlight)
+    GLint uniSpotPosition    = getUniform(shaderProgram, "spotLight.position");
+    GLint uniSpotDirection   = getUniform(shaderProgram, "spotLight.direction");
+    GLint uniSpotCutOff      = getUniform(shaderProgram, "spotLight.cutOff");
+    GLint uniSpotOuterCutOff = getUniform(shaderProgram, "spotLight.outerCutOff");
+    GLint uniSpotAmbient     = getUniform(shaderProgram, "spotLight.ambient");
+    GLint uniSpotDiffuse     = getUniform(shaderProgram, "spotLight.diffuse");
+    GLint uniSpotSpecular    = getUniform(shaderProgram, "spotLight.specular");
+    GLint uniSpotConstant    = getUniform(shaderProgram, "spotLight.constant");
+    GLint uniSpotLinear      = getUniform(shaderProgram, "spotLight.linear");
+    GLint uniSpotQuadratic   = getUniform(shaderProgram, "spotLight.quadratic");
+
+    // Distance fog
+    GLint uniFogColor   = getUniform(shaderProgram, "fogColor");
+    GLint uniFogDensity = getUniform(shaderProgram, "fogDensity");
 
     // Textura branca 1x1 usada quando um material não tem map_Kd,
     // para que a multiplicação pela textura no shader seja neutra.
@@ -610,10 +653,58 @@ int main() {
         }
     };
 
+    // --- Static lights uploaded once (dir + point) ---------------------
     const glm::vec3 skyDir = glm::normalize(glm::vec3(
         std::sin(glm::radians(60.0f)), std::cos(glm::radians(60.0f)), 0.0f));
-    glUniform3fv(uniLightDir, 1, &skyDir[0]);
-    glUniform3fv(uniLightColor, 1, &kClearColor[0]);
+
+    // Directional light: keep the former "sky" look driven by kClearColor.
+    glUniform3fv(uniDirDirection, 1, &skyDir[0]);
+    glm::vec3 dirAmbient  = 0.15f * kClearColor;
+    glm::vec3 dirDiffuse  = kClearColor;
+    glm::vec3 dirSpecular = kClearColor;
+    glUniform3fv(uniDirAmbient, 1, &dirAmbient[0]);
+    glUniform3fv(uniDirDiffuse, 1, &dirDiffuse[0]);
+    glUniform3fv(uniDirSpecular, 1, &dirSpecular[0]);
+
+    // Four point lights scattered through the scene (attenuation range ~50u).
+    const glm::vec3 pointPositions[kNumPointLights] = {
+        glm::vec3( 10.0f,  5.0f,  10.0f),
+        glm::vec3(-10.0f,  5.0f,  10.0f),
+        glm::vec3( 10.0f,  5.0f, -10.0f),
+        glm::vec3(-10.0f,  5.0f, -10.0f),
+    };
+    const glm::vec3 pointColors[kNumPointLights] = {
+        glm::vec3(1.0f, 0.3f, 0.3f),
+        glm::vec3(0.3f, 1.0f, 0.3f),
+        glm::vec3(0.3f, 0.3f, 1.0f),
+        glm::vec3(1.0f, 1.0f, 0.6f),
+    };
+    for (int i = 0; i < kNumPointLights; i++) {
+        glm::vec3 ambient  = 0.05f * pointColors[i];
+        glm::vec3 diffuse  = 0.8f  * pointColors[i];
+        glm::vec3 specular = pointColors[i];
+        glUniform3fv(uniPointLights[i].position, 1, &pointPositions[i][0]);
+        glUniform3fv(uniPointLights[i].ambient, 1, &ambient[0]);
+        glUniform3fv(uniPointLights[i].diffuse, 1, &diffuse[0]);
+        glUniform3fv(uniPointLights[i].specular, 1, &specular[0]);
+        glUniform1f(uniPointLights[i].constant, 1.0f);
+        glUniform1f(uniPointLights[i].linear, 0.09f);
+        glUniform1f(uniPointLights[i].quadratic, 0.032f);
+    }
+
+    // Spotlight constant terms (position/direction updated per frame below).
+    glUniform3f(uniSpotAmbient, 0.0f, 0.0f, 0.0f);
+    glUniform3f(uniSpotDiffuse, 1.0f, 1.0f, 1.0f);
+    glUniform3f(uniSpotSpecular, 1.0f, 1.0f, 1.0f);
+    glUniform1f(uniSpotConstant, 1.0f);
+    glUniform1f(uniSpotLinear, 0.09f);
+    glUniform1f(uniSpotQuadratic, 0.032f);
+    glUniform1f(uniSpotCutOff, std::cos(glm::radians(12.5f)));
+    glUniform1f(uniSpotOuterCutOff, std::cos(glm::radians(17.5f)));
+
+    // Distance fog blends toward the clear color.
+    glUniform3fv(uniFogColor, 1, &kClearColor[0]);
+    glUniform1f(uniFogDensity, 0.02f);
 
     double lastTime = glfwGetTime();
     bool spacePressed = false;
@@ -656,6 +747,10 @@ int main() {
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
         glUniformMatrix4fv(uniView, 1, GL_FALSE, &view[0][0]);
         glUniform3f(uniViewPos, cameraPos.x, cameraPos.y, cameraPos.z);
+
+        // Spotlight acts as a flashlight that follows the camera.
+        glUniform3f(uniSpotPosition, cameraPos.x, cameraPos.y, cameraPos.z);
+        glUniform3f(uniSpotDirection, cameraFront.x, cameraFront.y, cameraFront.z);
 
         // Atualiza posição e verifica expiração de cada projétil
         for (auto it = projectiles.begin(); it != projectiles.end(); ) {
