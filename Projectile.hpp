@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include <glm/vec3.hpp>
@@ -15,7 +16,7 @@ public:
     static const float RADIUS;        // fallback when the mesh has no extent
 
     Projectile(Mesh *mesh, glm::vec3 position, glm::vec3 direction);
-    bool step(float deltaTime, std::vector<Obj3D> &objects);
+    bool step(float deltaTime, std::vector<std::unique_ptr<Obj3D>> &objects);
 
 private:
     glm::vec3 direction;

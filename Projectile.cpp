@@ -14,7 +14,7 @@ Projectile::Projectile(Mesh *mesh, glm::vec3 position, glm::vec3 direction)
     this->transform = glm::translate(glm::mat4(1.0f), this->position);
 }
 
-bool Projectile::step(float deltaTime, std::vector<Obj3D> &objects) {
+bool Projectile::step(float deltaTime, std::vector<std::unique_ptr<Obj3D>> &objects) {
     position += direction * PROJECTILE_SPEED * deltaTime;
     remainingTime -= deltaTime;
     transform = glm::translate(glm::mat4(1.0f), position);
@@ -22,8 +22,8 @@ bool Projectile::step(float deltaTime, std::vector<Obj3D> &objects) {
     for (auto it = objects.begin(); it != objects.end(); ++it) {
         glm::vec3 normal;
         glm::vec3 closest;
-        if (it->checkSphereCollision(position, RADIUS, normal, closest)) {
-            if (it->reflect) {
+        if ((*it)->checkSphereCollision(position, RADIUS, normal, closest)) {
+            if ((*it)->reflect) {
                 // Objeto sólido: o projétil quica (reflete a direção).
                 direction = glm::normalize(glm::reflect(direction, normal));
                 position = closest + normal * (RADIUS + 1e-3f);

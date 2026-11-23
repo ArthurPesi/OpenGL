@@ -7,7 +7,8 @@ find_package(glfw3 3.3 REQUIRED)
 find_package(GLEW REQUIRED)
 find_package(glm REQUIRED)
 
-add_executable(hexagon main.cpp Face.cpp Obj3D.cpp Projectile.cpp stb_image_impl.cpp)
+add_executable(hexagon main.cpp Face.cpp Obj3D.cpp AnimatedObj3D.cpp ObjectConfig.cpp
+    Projectile.cpp stb_image_impl.cpp)
 
 # trackgen: standalone 2D tool that draws a B-spline race track and exports it as .obj
 add_executable(trackgen trackgen.cpp)
@@ -36,6 +37,16 @@ else()
 endif()
 target_link_libraries(hexagon PRIVATE ${PLATFORM_GL_LIBS})
 target_link_libraries(trackgen PRIVATE ${PLATFORM_GL_LIBS})
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(animation_tests tests/animation_tests.cpp Obj3D.cpp AnimatedObj3D.cpp
+        ObjectConfig.cpp Projectile.cpp)
+    target_include_directories(animation_tests PRIVATE ${CMAKE_SOURCE_DIR})
+    target_compile_options(animation_tests PRIVATE ${WARNING_FLAGS})
+    target_link_libraries(animation_tests PRIVATE GLEW::GLEW glm::glm)
+    add_test(NAME animation_tests COMMAND animation_tests ${CMAKE_SOURCE_DIR})
+endif()
 
 add_custom_command(TARGET hexagon POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

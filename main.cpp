@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 #include "Obj3D.hpp"
+#include "ObjectConfig.hpp"
 #include "Projectile.hpp"
 #include "stb_image.h"
 
@@ -357,7 +358,7 @@ std::unique_ptr<Mesh> readObj(const std::string &filename) {
 }
 
 void loadConfig(const char *fileName, std::vector<std::unique_ptr<Mesh>> &meshes,
-                std::vector<Obj3D> &objects) {
+                std::vector<std::unique_ptr<Obj3D>> &objects) {
     std::ifstream in(fileName);
     if (!in) {
         fprintf(stderr, "ERROR: could not open config file %s\n", fileName);
@@ -365,7 +366,9 @@ void loadConfig(const char *fileName, std::vector<std::unique_ptr<Mesh>> &meshes
     }
     std::string line;
     bool meshSection = true;
+    int lineNumber = 0;
     while (getline(in, line)) {
+        ++lineNumber;
         size_t start = line.find_first_not_of(" \t\r");
         if (start == std::string::npos) {
             if (meshSection) {
@@ -385,26 +388,22 @@ void loadConfig(const char *fileName, std::vector<std::unique_ptr<Mesh>> &meshes
             meshes.push_back(readObj(path));
         } else {
             int meshIndex;
-            int collisionFlag;
-            float tx, ty, tz, sx, sy, sz, rx, ry, rz;
-            sline >> meshIndex >> tx >> ty >> tz >> sx >> sy >> sz >> rx >> ry >> rz >> collisionFlag;
-
-            Obj3D obj;
-            if (meshIndex >= 0 && meshIndex < (int)meshes.size()) {
-                obj.mesh = meshes[meshIndex].get();
-            } else {
+            if (!(sline >> meshIndex)) {
+                fprintf(stderr, "ERROR: invalid mesh index in %s:%d\n", fileName, lineNumber);
+                continue;
+            }
+            if (meshIndex < 0 || meshIndex >= (int)meshes.size()) {
                 fprintf(stderr, "ERROR: config references invalid mesh index %d\n", meshIndex);
                 continue;
             }
-            glm::mat4 rotation = glm::mat4(1.0f);
-            rotation = glm::rotate(rotation, glm::radians(rx), glm::vec3(1.0f, 0.0f, 0.0f));
-            rotation = glm::rotate(rotation, glm::radians(ry), glm::vec3(0.0f, 1.0f, 0.0f));
-            rotation = glm::rotate(rotation, glm::radians(rz), glm::vec3(0.0f, 0.0f, 1.0f));
-            obj.transform = glm::translate(glm::mat4(1.0f), glm::vec3(tx, ty, tz)) * rotation *
-                            glm::scale(glm::mat4(1.0f), glm::vec3(sx, sy, sz));
-            obj.reflect = collisionFlag != 0;
-            obj.init();
-            objects.push_back(obj);
+            auto obj = readObjectConfig(sline, dirOf(fileName));
+            if (!obj) {
+                fprintf(stderr, "ERROR: invalid object configuration in %s:%d\n", fileName, lineNumber);
+                continue;
+            }
+            obj->mesh = meshes[meshIndex].get();
+            obj->init();
+            objects.push_back(std::move(obj));
         }
     }
 }
@@ -545,7 +544,7 @@ int main() {
     updateProjection(fbWidth, fbHeight);
 
     std::vector<std::unique_ptr<Mesh>> meshes;
-    std::vector<Obj3D> objects;
+    std::vector<std::unique_ptr<Obj3D>> objects;
     std::vector<std::unique_ptr<Projectile>> projectiles;
     loadConfig("config.cfg", meshes, objects);
     Mesh *sphereMesh = meshes.size() > 1 ? meshes[1].get() : nullptr;
@@ -645,7 +644,8 @@ int main() {
 
     // Define a matriz transform de um objeto e desenha todas as suas malhas.
     auto drawObject = [&](const Obj3D &obj) {
-        glUniformMatrix4fv(uniTransform, 1, GL_FALSE, &obj.transform[0][0]);
+        const glm::mat4 &transform = obj.getTransform();
+        glUniformMatrix4fv(uniTransform, 1, GL_FALSE, &transform[0][0]);
         for (const auto &g : obj.mesh->groups) {
             applyMaterial(obj.mesh, g);
             glBindVertexArray(g.VAO);
@@ -707,9 +707,11 @@ int main() {
     glUniform1f(uniFogDensity, 0.02f);
 
     double lastTime = glfwGetTime();
+    double animationStartTime = -1.0;
     bool spacePressed = false;
     while (!glfwWindowShouldClose(window)) {
         double currentTime = glfwGetTime();
+        if (animationStartTime < 0.0) animationStartTime = currentTime;
         float deltaTime = (float)(currentTime - lastTime);
         lastTime = currentTime;
 
@@ -752,6 +754,11 @@ int main() {
         glUniform3f(uniSpotPosition, cameraPos.x, cameraPos.y, cameraPos.z);
         glUniform3f(uniSpotDirection, cameraFront.x, cameraFront.y, cameraFront.z);
 
+        // Select animation poses before collision checks and drawing.
+        for (auto &obj : objects) {
+            obj->updateAnimation(currentTime - animationStartTime);
+        }
+
         // Atualiza posição e verifica expiração de cada projétil
         for (auto it = projectiles.begin(); it != projectiles.end(); ) {
             if ((*it)->step(deltaTime, objects)) {
@@ -763,7 +770,7 @@ int main() {
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         for (const auto &obj : objects) {
-            drawObject(obj);
+            drawObject(*obj);
         }
         for (const auto &p : projectiles) {
             drawObject(*p);
