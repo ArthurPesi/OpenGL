@@ -5,7 +5,7 @@
 
 #include "Obj3D.hpp"
 
-inline constexpr double GLOBAL_ANIMATION_FREQUENCY = 2.0; // frames per second (Hz)
+inline constexpr double GLOBAL_ANIMATION_FREQUENCY = 14.0; // frames per second (Hz)
 
 class AnimatedObj3D : public Obj3D {
 public:

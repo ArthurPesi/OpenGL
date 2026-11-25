@@ -66,7 +66,27 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-These checks do not open a window. For a manual visual check, run
-`./build/hexagon` from the project root and look at the sample car: it should
-cycle through 0°, 90°, 180°, and 270°, changing pose every 0.5 seconds and
-repeating every 2 seconds.
+These checks do not open a window and cover animation loading, playback,
+collisions, and track positions/headings.
+
+## Track-following animation
+
+Run `./build/trackgen` from the project root, click at least four control points,
+press Space to close the loop (optional), then press Esc to export both
+`objects/track.obj` and `track.anim`. The car in `config.cfg` uses `7 track.anim 1`.
+An initial animation is included for the existing track; `car.anim` is retained
+as the four-frame rotation example.
+
+Each B-spline centerline sample produces one animation row. Positions use the
+same centroid and flipped-Z pixel-to-world mapping as the road mesh, then apply
+the track's scene scale of `6` and height of `-0.9`. The car retains its `0.12`
+scale and turns around Y to align its local +Z front with the curve tangent.
+Closed tracks use wrapping neighbors; open endpoints use one-sided tangents.
+Repeated points use the next distinct sample, or the previous sample at the end.
+
+The placement constants in `TrackPath.hpp` must match the track transform in
+`config.cfg` if you change its scale or height. Playback still advances one
+sample every 0.5 seconds (2 Hz), with no interpolation; open tracks jump back to
+the beginning when playback loops. Run `./build/hexagon` to view the car following
+the generated track. To view the original rotation example instead, change the
+car record back to `7 car.anim 1`.

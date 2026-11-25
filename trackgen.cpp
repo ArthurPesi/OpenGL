@@ -1,11 +1,11 @@
 // trackgen — standalone 2D tool to draw a race track as a uniform cubic B-spline
-// and export it as a triangulated road mesh (.obj) for the main hexagon pipeline.
+// and export a road mesh (.obj) plus a centerline car animation (.anim).
 //
 // Controls:
 //   Left click : add a control point
 //   Space      : close the loop (wrap a curve from last control point back to first)
 //   Esc        : build the road mesh from inner/outer offset splines, write
-//                objects/track.obj, and exit.
+//                objects/track.obj and track.anim, and exit.
 //
 // The 2D curve lives in the xy plane (pixel space); the exported mesh is placed in
 // the xz plane (flat on the ground, y=0) so it drops straight into the 3D scene.
@@ -24,14 +24,13 @@
 #include <string>
 #include <vector>
 
+#include "TrackPath.hpp"
+
 // ---- Window / tool constants ----
 constexpr int   kWindowWidth     = 800;
 constexpr int   kWindowHeight    = 600;
 constexpr int   kGlVersionMajor  = 4;
 constexpr int   kGlVersionMinor  = 1;
-constexpr int   kSamplesPerSeg   = 24;     // spline samples per B-spline segment
-constexpr float kTrackWidth      = 60.0f;  // road width in pixels
-constexpr float kWorldScale      = 1.0f / 50.0f; // pixels -> world units for export
 constexpr float kPointSize       = 8.0f;
 
 const glm::vec3 kClearColor(0.12f, 0.12f, 0.14f);
@@ -106,91 +105,21 @@ GLint getUniform(GLuint program, const char *name) {
     return loc;
 }
 
-// --- B-spline -----------------------------------------------------------------
-
-// Evaluate one uniform cubic B-spline segment at parameter t in [0,1] from four
-// consecutive control points. Approximating basis (curve passes near, not through).
-glm::vec2 bsplinePoint(const glm::vec2 &p0, const glm::vec2 &p1,
-                       const glm::vec2 &p2, const glm::vec2 &p3, float t) {
-    float t2 = t * t;
-    float t3 = t2 * t;
-    float b0 = (-t3 + 3.0f * t2 - 3.0f * t + 1.0f) / 6.0f;
-    float b1 = (3.0f * t3 - 6.0f * t2 + 4.0f) / 6.0f;
-    float b2 = (-3.0f * t3 + 3.0f * t2 + 3.0f * t + 1.0f) / 6.0f;
-    float b3 = t3 / 6.0f;
-    return b0 * p0 + b1 * p1 + b2 * p2 + b3 * p3;
-}
-
-// Sample the whole spline. Open: segments 0..n-4. Closed: n segments wrapping mod n
-// (the wrap segments bridge the last control points back to the first, closing the
-// cycle). Returns empty if there aren't enough points to form a segment.
-std::vector<glm::vec2> evalBSpline(const std::vector<glm::vec2> &pts, bool closed) {
-    std::vector<glm::vec2> out;
-    int n = (int)pts.size();
-    if (n < 4) return out;
-
-    int segCount = closed ? n : n - 3;
-    for (int s = 0; s < segCount; s++) {
-        const glm::vec2 &p0 = pts[s % n];
-        const glm::vec2 &p1 = pts[(s + 1) % n];
-        const glm::vec2 &p2 = pts[(s + 2) % n];
-        const glm::vec2 &p3 = pts[(s + 3) % n];
-        // Include the endpoint only on the last segment of an open curve so we don't
-        // duplicate shared vertices between adjacent segments.
-        int last = (s == segCount - 1 && !closed) ? kSamplesPerSeg : kSamplesPerSeg - 1;
-        for (int i = 0; i <= last; i++) {
-            float t = (float)i / (float)kSamplesPerSeg;
-            out.push_back(bsplinePoint(p0, p1, p2, p3, t));
-        }
-    }
-    return out;
-}
-
-// --- Offset splines + mesh export --------------------------------------------
-
-// Build inner/outer edges by offsetting the centerline along its 2D normal.
-void buildOffsets(const std::vector<glm::vec2> &center, bool closed,
-                  std::vector<glm::vec2> &inner, std::vector<glm::vec2> &outer) {
-    int n = (int)center.size();
-    float half = kTrackWidth * 0.5f;
-    for (int i = 0; i < n; i++) {
-        glm::vec2 prev, next;
-        if (closed) {
-            prev = center[(i - 1 + n) % n];
-            next = center[(i + 1) % n];
-        } else {
-            prev = center[i > 0 ? i - 1 : i];
-            next = center[i < n - 1 ? i + 1 : i];
-        }
-        glm::vec2 tangent = next - prev;
-        float len = glm::length(tangent);
-        if (len > 1e-6f) tangent /= len;
-        glm::vec2 normal(-tangent.y, tangent.x); // 90° rotation in 2D
-        outer.push_back(center[i] + normal * half);
-        inner.push_back(center[i] - normal * half);
-    }
-}
+// --- Mesh export -------------------------------------------------------------
 
 // Write the road ribbon between inner & outer as an .obj in the xz plane (y=0).
 // Emits v / vt / vn / f — the exact subset readObj() in main.cpp consumes.
 bool writeObj(const std::string &path, const std::vector<glm::vec2> &inner,
-              const std::vector<glm::vec2> &outer, bool closed) {
+              const std::vector<glm::vec2> &outer, const glm::vec2 &centroid, bool closed) {
     int n = (int)inner.size();
     if (n < 2) {
         fprintf(stderr, "ERROR: not enough samples to build a mesh (need >= 2)\n");
         return false;
     }
 
-    // Centroid in pixel space so the exported track sits near the world origin.
-    glm::vec2 centroid(0.0f);
-    for (int i = 0; i < n; i++) centroid += (inner[i] + outer[i]);
-    centroid /= (float)(2 * n);
-
-    // 2D pixel (x,y) -> 3D world (x,0,z). Flip z so the layout isn't mirrored
-    // relative to the on-screen view (screen y grows downward).
+    // Use the same origin and coordinate conversion as the animation export.
     auto toWorld = [&](const glm::vec2 &p) {
-        return glm::vec3((p.x - centroid.x) * kWorldScale, 0.0f,
-                         -(p.y - centroid.y) * kWorldScale);
+        return trackPointToWorld(p, centroid);
     };
 
     std::ofstream out(path);
@@ -239,6 +168,11 @@ bool writeObj(const std::string &path, const std::vector<glm::vec2> &inner,
         out << "f " << o0 << "/" << o0 << "/1 "
                     << in1 << "/" << in1 << "/1 "
                     << o1 << "/" << o1 << "/1\n";
+    }
+    out.close();
+    if (!out) {
+        fprintf(stderr, "ERROR: could not write mesh %s\n", path.c_str());
+        return false;
     }
     printf("Wrote %s (%d vertices, %d triangles)\n", path.c_str(), 2 * n, 2 * segs);
     return true;
@@ -432,15 +366,21 @@ int main() {
         glfwPollEvents();
     }
 
-    // Esc path: build the mesh and export.
+    // Esc path: export the mesh and one car pose per centerline sample.
+    bool exportSucceeded = true;
     if (g_doExport) {
         std::vector<glm::vec2> spline = evalBSpline(g_controlPoints, g_closed);
         if (spline.size() < 2) {
             fprintf(stderr, "ERROR: need at least 4 control points to export a track\n");
+            exportSucceeded = false;
         } else {
             std::vector<glm::vec2> inner, outer;
             buildOffsets(spline, g_closed, inner, outer);
-            writeObj("objects/track.obj", inner, outer, g_closed);
+            glm::vec2 centroid = trackCentroid(spline);
+            exportSucceeded = writeObj("objects/track.obj", inner, outer, centroid, g_closed);
+            if (exportSucceeded) {
+                exportSucceeded = writeTrackAnimation("track.anim", spline, centroid, g_closed);
+            }
         }
     }
 
@@ -452,5 +392,5 @@ int main() {
     glDeleteBuffers(1, &edgeVBO);
     glDeleteProgram(program);
     glfwTerminate();
-    return 0;
+    return exportSucceeded ? 0 : 1;
 }
