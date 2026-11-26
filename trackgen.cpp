@@ -5,7 +5,7 @@
 //   Left click : add a control point
 //   Space      : close the loop (wrap a curve from last control point back to first)
 //   Esc        : build the road mesh from inner/outer offset splines, write
-//                objects/track.obj and track.anim, and exit.
+//                objects/track.obj and objects/track.anim, and exit.
 //
 // The 2D curve lives in the xy plane (pixel space); the exported mesh is placed in
 // the xz plane (flat on the ground, y=0) so it drops straight into the 3D scene.
@@ -379,7 +379,7 @@ int main() {
             glm::vec2 centroid = trackCentroid(spline);
             exportSucceeded = writeObj("objects/track.obj", inner, outer, centroid, g_closed);
             if (exportSucceeded) {
-                exportSucceeded = writeTrackAnimation("track.anim", spline, centroid, g_closed);
+                exportSucceeded = writeTrackAnimation("objects/track.anim", spline, centroid, g_closed);
             }
         }
     }

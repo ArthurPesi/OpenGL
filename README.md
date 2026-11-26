@@ -73,7 +73,8 @@ collisions, and track positions/headings.
 
 Run `./build/trackgen` from the project root, click at least four control points,
 press Space to close the loop (optional), then press Esc to export both
-`objects/track.obj` and `track.anim`. The car in `config.cfg` uses `7 track.anim 1`.
+`objects/track.obj` and `objects/track.anim`. The car in `config.cfg` uses
+`7 objects/track.anim 1`.
 An initial animation is included for the existing track; `car.anim` is retained
 as the four-frame rotation example.
 
